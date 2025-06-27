@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "sar-agent-mvp"
+version = "0.1.0"
+description = ""
+authors = ["yuki011121 <tyy17723818165@126.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10, <3.14" 
+requests = "^2.32.4"
+redis = "^6.2.0"
+pyautogen = "^0.9"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
