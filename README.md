@@ -1,7 +1,6 @@
 # SAR Multi-Agent MVP
 A functional AI-powered multi-agent search and rescue prototype.
 
----
 
 ## Quick Start
 
@@ -9,12 +8,10 @@ A functional AI-powered multi-agent search and rescue prototype.
 
 Make sure you have the following installed:
 
-- **Git** — for cloning the repository
-- **Docker Desktop** — for running background services like Redis  
-  **Please ensure it is running before you start.**
-- **Python 3.10+** and **Poetry** — for managing Python dependencies
+- **Git** 
+- **Docker Desktop** 
+- **Python 3.10+** and **Poetry** 
 
----
 
 ### 2. Setup
 
@@ -44,7 +41,10 @@ Example: run the Weather Agent.
 poetry run python -m agents.weather
 ```
 ### Troubleshooting
-ModuleNotFoundError (e.g., No module named 'redis'): This usually means the virtual environment is corrupted or out of sync. A reliable fix is to rebuild it:
+- SolverProblemError during poetry install or poetry add
+This is a dependency version conflict. Our project has a specific Python requirement because of the pyautogen library.
+Solution: Open the pyproject.toml file and ensure your project's Python version is set to python = ">=3.10, <3.14". Your system's base python3 must also fall within this range.
+- ModuleNotFoundError (e.g., No module named 'redis'): This usually means the virtual environment is corrupted or out of sync. A reliable fix is to rebuild it:
 ```
 # 1. Remove the old environment
 poetry env remove python
