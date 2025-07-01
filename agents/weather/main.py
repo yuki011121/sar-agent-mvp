@@ -11,7 +11,7 @@ from datetime import datetime
 LATITUDE = os.getenv("LATITUDE", "35.2828")
 LONGITUDE = os.getenv("LONGITUDE", "-120.6596")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600)) # 每小时更新一次
+UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600)) 
 AGENT_VERSION = "weather-agent-v1.0"
 STREAM_NAME = "weather.forecast.raw"
 

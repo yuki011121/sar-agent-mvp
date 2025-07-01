@@ -9,7 +9,7 @@ A functional AI-powered multi-agent search and rescue prototype.
 Make sure you have the following installed:
 
 - **Git** 
-- **Docker Desktop** 
+- **Docker** 
 - **Python 3.10+** and **Poetry** 
 
 
@@ -38,8 +38,18 @@ poetry install
 ### 3. Running an Agent
 Example: run the Weather Agent.
 ```
-poetry run python -m agents.weather
+poetry run python -m agents.weather.main
 ```
+
+### 4. Check Redis
+Open a new terminal window and run the following commands:
+```
+XLEN weather.forecast.raw
+XREVRANGE weather.forecast.raw + - COUNT 1
+```
+The first command shows the total number of entries in the weather.forecast.raw stream.
+The second command retrieves the most recent entry from that stream.
+
 ### Troubleshooting
 - SolverProblemError during poetry install or poetry add
 This is a dependency version conflict. Our project has a specific Python requirement because of the pyautogen library.
