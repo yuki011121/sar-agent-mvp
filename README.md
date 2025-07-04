@@ -1,9 +1,29 @@
 # SAR Multi-Agent MVP
 A functional AI-powered multi-agent search and rescue prototype.
 
+## Please Read Before Pushing Code
+
+To avoid conflicts and keep the codebase organized, **do not push your code directly to the `dev` branch**.
+Instead, please work on your own feature branch and submit a **Pull Request** to `dev`.
+### Example Workflow
+#### 1. Pull the latest `dev` branch:
+   ```
+   git checkout dev
+   git pull origin dev
+   ```
+#### 2. Create your own feature branch from dev:
+   ```
+git checkout -b feature/photo-agent
+   ```
+#### 3. Make changes, commit, and push to your branch:
+```
+git add .
+git commit -m "Implement basic object detection"
+git push origin feature/photo-agent
+```
+#### 4. When you're done, open a Pull Request to merge into dev.
 
 ## Quick Start
-
 ### 1. Prerequisites
 
 Make sure you have the following installed:
