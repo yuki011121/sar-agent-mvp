@@ -1,7 +1,5 @@
 from agents.path_analysis.dem_utils import *
 from agents.path_analysis.pathing import * 
-from rasterio.transform import xy
-from pyproj import Transformer
 
 def main():
     print("Path Analysis Agent: Starting...")

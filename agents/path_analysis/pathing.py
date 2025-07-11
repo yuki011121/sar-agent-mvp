@@ -17,6 +17,13 @@ def pixel_to_latlon(row, col, transform, crs):
     lon, lat = transformer.transform(x, y)
     return lat, lon
 
+# Check if a given (lat, lon) point lies within the bounds of the DEM (cost map)
+def latlon_in_bounds(lat, lon, transform, crs, rows, cols):
+    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    row, col = rowcol(transform, x, y)
+    return (0 <= row < rows) and (0 <= col < cols)
+
 # Calculate Octile distance heuristic between two points for pathfinding
 def heuristic(a, b):
     D = 1
@@ -27,6 +34,12 @@ def heuristic(a, b):
 
 # Perform A* search on a cost map to find the lowest-cost path from start to goal given in lat/lon
 def a_star(cost_map, start_latlon, goal_latlon, transform, crs):
+    rows, cols = cost_map.shape
+    if not latlon_in_bounds(*start_latlon, transform, crs, rows, cols):
+        raise ValueError("Start location is outside the DEM bounds")
+    if not latlon_in_bounds(*goal_latlon, transform, crs, rows, cols):
+        raise ValueError("Goal location is outside the DEM bounds")
+    
     start = latlon_to_pixel(*start_latlon, transform, crs)
     goal = latlon_to_pixel(*goal_latlon, transform, crs)
 
