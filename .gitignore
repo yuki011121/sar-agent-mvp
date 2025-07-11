@@ -20,4 +20,4 @@ venv/
 *.env
 
 # Large DEM files
-agents/path_analysis/data/slo_dem.tif
+agents/path_analysis/data/*.tif
