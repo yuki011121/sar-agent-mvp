@@ -2,6 +2,7 @@ import pandas as pd
 import redis
 import logging
 import os
+import json
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 AGENT_VERSION = "history-agent-v1.0"
@@ -24,14 +25,14 @@ except redis.exceptions.ConnectionError as e:
 
 def redis_input():
     logging.info("Blocking until a new message is found")
-    #reads the oldest message (switch to $ for newest), limit 1 message to fetch, block forever until
-    #a message is received 
-    input_received = redis_client.xread({STREAM_NAME_IN: '$'}, count=1, block=0)
+    #blocks until at least one new message is present
+    #value returned is in format (stream name, value read)
+    input_received = redis_client.blpop([STREAM_NAME_IN], 0)
     #first element returned by redis is the array of values read
-    messages_read = input_received[0]
-    input_received_entry = messages_read[1]
-    print(input_received)
-    return input_received_entry
+    message_read = input_received[1]
+    message_read = json.loads(message_read)
+    logging.info("Read message and parsed correctly")
+    return message_read
 
 def redis_output(output):
     pass
@@ -62,7 +63,7 @@ def main():
 
     logging.info("Start redis channel listening loop")
     while True:
-        input_received_entry = redis_input()
+        message_read = redis_input()
 
         logging.info("Querying dataframe")
 
