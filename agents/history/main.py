@@ -89,6 +89,7 @@ def main():
 
         }
         redis_output(standardized_output)
+        
 
 
 
