@@ -88,28 +88,28 @@ def fetch_and_process_weather():
     return None
 
 def publish_to_redis(message: dict):
-    """Publishes the given message to the configured Redis Stream."""
-    try:
-        message_id = redis_client.xadd(STREAM_NAME, {"data": json.dumps(message)})
-        logging.info(f"Successfully published message to stream '{STREAM_NAME}' with ID {message_id}")
-    except redis.exceptions.RedisError as e:
-        logging.error(f"Failed to publish to Redis: {e}")
-
-def main():
-    """Main loop for the Weather Agent."""
-    logging.info(f"{AGENT_VERSION} starting up. Update interval: {UPDATE_INTERVAL_SECONDS} seconds.")
-    while True:
-        logging.info("Starting new weather fetch cycle.")
-        weather_data = fetch_and_process_weather()
-        
-        if weather_data:
-            publish_to_redis(weather_data)
-        else:
-            logging.warning("No weather data was fetched in this cycle.")
-            
-        logging.info(f"Cycle complete. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
-        time.sleep(UPDATE_INTERVAL_SECONDS)
-
-
-if __name__ == "__main__":
-    main()
+    """Publishes the given message to the configured Redis Stream."""                   
+    try:                    
+        message_id = redis_client.xadd(STREAM_NAME, {"data": json.dumps(message)})                  
+        logging.info(f"Successfully published message to stream '{STREAM_NAME}' with ID {message_id}")                  
+    except redis.exceptions.RedisError as e:                    
+        logging.error(f"Failed to publish to Redis: {e}")                   
+                    
+def main():                 
+    """Main loop for the Weather Agent."""                  
+    logging.info(f"{AGENT_VERSION} starting up. Update interval: {UPDATE_INTERVAL_SECONDS} seconds.")                   
+    while True:                 
+        logging.info("Starting new weather fetch cycle.")                   
+        weather_data = fetch_and_process_weather()                  
+                            
+        if weather_data:                    
+            publish_to_redis(weather_data)                  
+        else:                   
+            logging.warning("No weather data was fetched in this cycle.")                   
+                                
+        logging.info(f"Cycle complete. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")                  
+        time.sleep(UPDATE_INTERVAL_SECONDS)                 
+                    
+                    
+if __name__ == "__main__":                  
+    main()                  
