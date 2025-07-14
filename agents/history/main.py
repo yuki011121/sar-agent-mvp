@@ -37,7 +37,7 @@ def redis_input():
 def redis_output(output):
     pass
 
-def normalize_df(df : pd.DataFrame):
+def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     logging.info("Normalizing Data")
     columns = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category',
        'Subject.Activity', 'Sex', 'Subject.Status']
@@ -46,10 +46,10 @@ def normalize_df(df : pd.DataFrame):
     df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
 
 
-def main():
-    logging.info("Reading Isirid Dataset")
-    #key is the input name from redis json and value is column name in the isrid csv
-    mapping_inputs_cols = {"source": 'Data.Source',
+def find_matches(data : pd.DataFrame, queryJSON: dict):
+    logging.info("Querying dataframe")
+    map_inputs_cols = {
+                            "source": 'Data.Source',
                            'outcome': 'Incident.Outcome',
                            'terrain': 'Terrain',
                            'category': 'Subject.Category',
@@ -57,15 +57,31 @@ def main():
                            'age': 'Age',
                            'sex': 'Sex',
                            'status': 'Subject.Status'
-                           }
-    isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv')
-    #normalize_df(isrid)
+                        }
+    
+    mask = pd.Series(True, index=data.index)
+
+    for key, col in map_inputs_cols.items():
+        if key in queryJSON and pd.notna(queryJSON[key]):
+            mask &= data[col] == queryJSON[key]
+
+    return data[mask]
+
+
+def main():
+    logging.info("Reading Isirid Dataset")
+    #key is the input name from redis json and value is column name in the isrid csv
+    isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv', index_col=0)
 
     logging.info("Start redis channel listening loop")
     while True:
         message_read = redis_input()
 
-        logging.info("Querying dataframe")
+        matches = find_matches(isrid, message_read)
+        print(matches)
+        print(type(matches))
+        print(json.dumps(matches.to_dict()))
+
 
         logging.info("Querying LLM")
 
