@@ -3,17 +3,31 @@ import redis
 import logging
 import os
 import json
+import openai
+from dotenv import load_dotenv
 
+
+load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 AGENT_VERSION = "history-agent-v1.0"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
-last_read_id = None
+OPENAI_KEY = os.getenv("OPENAI_KEY", None)
+
+last_msg_ID = None
+
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+
+if OPENAI_KEY is None:
+    logging.info("Couldn't find a api key for OPENAI")
+    exit(1)
+
+client = openai.OpenAI(api_key=OPENAI_KEY)
 
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -24,15 +38,24 @@ except redis.exceptions.ConnectionError as e:
     exit(1)
 
 def redis_input():
+    global last_msg_ID
+    ID_INDEX = 0
+    MSG_DATA_INDEX = 1
     logging.info("Blocking until a new message is found")
-    #blocks until at least one new message is present
-    #value returned is in format (stream name, value read)
-    input_received = redis_client.blpop([STREAM_NAME_IN], 0)
-    #first element returned by redis is the array of values read
-    message_read = input_received[1]
-    message_read = json.loads(message_read)
+    #reads the oldest message (switch to $ for newest), limit 1 message to fetch, block forever until
+    #a message is received 
+    input_received = redis_client.xread({STREAM_NAME_IN: ('$' if last_msg_ID is None else last_msg_ID)}, count=1, block=0)
+    #input_received is an array arrays that contain a key (stream name)
+    # and an array of tuples (ID, field-value pairs)
+    stream_data = input_received[0]
+    msgs_read = stream_data[1]
+    #there is only one msg that is read
+    msg = msgs_read[0]
+    last_msg_ID = msg[ID_INDEX]
+    msg_data = msg[MSG_DATA_INDEX]
+    print(msg_data)
     logging.info("Read message and parsed correctly")
-    return message_read
+    return msg_data
 
 def redis_output(output):
     pass
@@ -68,6 +91,35 @@ def find_matches(data : pd.DataFrame, queryJSON: dict):
     return data[mask]
 
 
+def create_summary():
+    instructions = "You are an excellent story teller"
+    model_input = "Tell me a three sentence bedtime story about a unicorn."
+    response = client.responses.create(
+        model="gpt-4.1-nano",
+        instructions= instructions,
+        input= model_input,
+        max_output_tokens = 200,
+    )
+
+    # print(type(response))
+    # print(response)
+    response=response.model_dump()
+
+    if response["error"]:
+        print("there was an error with the model response")
+        print(response["error"])
+        exit(1)
+    
+    print(response)
+    #this is a dictionary
+    output = response[output][0]
+    #output -> content(array of dictionaries) -> get text string
+    summary = output["content"][0]["text"]
+    print(summary)
+    
+    return summary
+#coseine similiarty and TF-IDF
+
 def main():
     logging.info("Reading Isirid Dataset")
     #key is the input name from redis json and value is column name in the isrid csv
@@ -77,13 +129,14 @@ def main():
     while True:
         message_read = redis_input()
 
-        matches = find_matches(isrid, message_read)
-        print(matches)
-        print(type(matches))
-        print(json.dumps(matches.to_dict()))
+        # matches = find_matches(isrid, message_read)
+        # print(matches)
+        # print(type(matches))
+        # print(json.dumps(matches.to_dict()))
 
 
         logging.info("Querying LLM")
+        #create_summary()
 
         standardized_output = {
 
