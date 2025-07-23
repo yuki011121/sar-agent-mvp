@@ -1,10 +1,15 @@
 import pandas as pd
+import numpy as np
 import redis
 import logging
 import os
 import json
 import openai
 from dotenv import load_dotenv
+from datetime import datetime, timezone
+# import required module
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 load_dotenv()
@@ -12,9 +17,13 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 AGENT_VERSION = "history-agent-v1.0"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
+AGENT_VERSION = "history-agent-v1.0"
 OPENAI_KEY = os.getenv("OPENAI_KEY", None)
+ISRID_COLUMNS = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category', 'Subject.Activity', 'Age',
+                           'Sex', 'Subject.Status']
 
 last_msg_ID = None
+vectorizer = TfidfVectorizer()
 
 
 logging.basicConfig(
@@ -69,26 +78,12 @@ def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
 
 
-def find_matches(data : pd.DataFrame, queryJSON: dict):
-    logging.info("Querying dataframe")
-    map_inputs_cols = {
-                            "source": 'Data.Source',
-                           'outcome': 'Incident.Outcome',
-                           'terrain': 'Terrain',
-                           'category': 'Subject.Category',
-                           'activity': 'Subject.Activity',
-                           'age': 'Age',
-                           'sex': 'Sex',
-                           'status': 'Subject.Status'
-                        }
-    
-    mask = pd.Series(True, index=data.index)
-
-    for key, col in map_inputs_cols.items():
-        if key in queryJSON and pd.notna(queryJSON[key]):
-            mask &= data[col] == queryJSON[key]
-
-    return data[mask]
+def find_matches(data : pd.DataFrame, vectorized_rows, queryJSON: dict):
+    query_as_string = " ".join(queryJSON.values()).lower()
+    query_vectorized = vectorizer.transform([query_as_string])
+    similarities = cosine_similarity(query_vectorized, vectorized_rows)[0]
+    max_index = np.argmax(similarities)
+    return data.iloc[max_index]
 
 
 def create_summary():
@@ -101,45 +96,39 @@ def create_summary():
         max_output_tokens = 200,
     )
 
-    # print(type(response))
-    # print(response)
-    response=response.model_dump()
-
-    if response["error"]:
-        print("there was an error with the model response")
-        print(response["error"])
-        exit(1)
+    content = response['choices'][0]['message']['content']
+    print(content)
     
-    print(response)
-    #this is a dictionary
-    output = response[output][0]
-    #output -> content(array of dictionaries) -> get text string
-    summary = output["content"][0]["text"]
-    print(summary)
-    
-    return summary
+    return content
 #coseine similiarty and TF-IDF
 
 def main():
     logging.info("Reading Isirid Dataset")
     #key is the input name from redis json and value is column name in the isrid csv
     isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv', index_col=0)
-
+    concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
+    vectorized_rows = vectorizer.fit_transform(concatenated_rows)
+    # print(concatenated_rows)
+    # print(vectorized_rows.shape)
     logging.info("Start redis channel listening loop")
     while True:
         message_read = redis_input()
 
-        # matches = find_matches(isrid, message_read)
-        # print(matches)
-        # print(type(matches))
-        # print(json.dumps(matches.to_dict()))
+        matches = find_matches(isrid, vectorized_rows, message_read)
+        print(matches)
 
 
         logging.info("Querying LLM")
-        #create_summary()
-
+        #summary = create_summary()
+        metadata = {
+            "agent_name": AGENT_VERSION,
+            "timestamp_utc": datetime.now(timezone.utc),
+            "source": {
+                "summary": "gpt-4.1-nano"
+            }
+        }
         standardized_output = {
-
+            "stub" : message_read
         }
         redis_output(standardized_output)
         
