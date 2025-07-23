@@ -62,12 +62,11 @@ def redis_input():
     msg = msgs_read[0]
     last_msg_ID = msg[ID_INDEX]
     msg_data = msg[MSG_DATA_INDEX]
-    print(msg_data)
     logging.info("Read message and parsed correctly")
     return msg_data
 
 def redis_output(standardized_output):
-    redis_client.xadd(STREAM_NAME_OUT, standardized_output)
+    redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
     logging.info(f"Summary payload added to {standardized_output} stream")
 
 def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
@@ -79,7 +78,7 @@ def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
 
 
-def find_matches(data : pd.DataFrame, vectorized_rows, queryJSON: dict):
+def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict):
     query_as_string = " ".join(queryJSON.values()).lower()
     query_vectorized = vectorizer.transform([query_as_string])
     similarities = cosine_similarity(query_vectorized, vectorized_rows)[0]
@@ -87,18 +86,25 @@ def find_matches(data : pd.DataFrame, vectorized_rows, queryJSON: dict):
     return data.iloc[max_index]
 
 
-def create_summary():
-    instructions = "You are an excellent story teller"
-    model_input = "Tell me a three sentence bedtime story about a unicorn."
+def create_summary(match: pd.Series):
+    dev_instructions = "You are a Search and Rescue expert tasked with giving summaries of a" \
+                    "previous search and rescue incident"
     response = client.responses.create(
         model="gpt-4.1-nano",
-        instructions= instructions,
-        input= model_input,
+        input=[
+            {
+                "role": "developer",
+                "content": dev_instructions
+            },
+            {
+                "role": "user",
+                "content": f"Here is a search and rescue incident given in json form {match.to_json()}. Note that the data source value is abbreviated"
+            }
+        ],
         max_output_tokens = 200,
     )
 
-    content = response['choices'][0]['message']['content']
-    print(content)
+    content = response.output[0].content[0].text
     
     return content
 
@@ -108,21 +114,17 @@ def main():
     isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv', index_col=0)
     concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
     vectorized_rows = vectorizer.fit_transform(concatenated_rows)
-    # print(concatenated_rows)
-    # print(vectorized_rows.shape)
     logging.info("Start redis channel listening loop")
     while True:
         message_read = redis_input()
 
-        matches = find_matches(isrid, vectorized_rows, message_read)
-        print(matches)
-
+        match = find_match(isrid, vectorized_rows, message_read)
 
         logging.info("Querying LLM")
-        summary = None#create_summary()
+        summary = create_summary(match)
         metadata = {
             "agent_name": AGENT_VERSION,
-            "timestamp_utc": datetime.now(timezone.utc),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "source": {
                 "summary-llm": "gpt-4.1-nano"
             }
@@ -131,12 +133,10 @@ def main():
             "metadata": metadata,
             "summary" : summary
         }
-        # redis_output(standardized_output)
+        redis_output(standardized_output)
         
 
 
 
 if __name__ == "__main__":
     main()
-
-    #gemni flash free version, chatgpt edu
