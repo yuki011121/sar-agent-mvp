@@ -66,8 +66,9 @@ def redis_input():
     logging.info("Read message and parsed correctly")
     return msg_data
 
-def redis_output(output):
-    pass
+def redis_output(standardized_output):
+    redis_client.xadd(STREAM_NAME_OUT, standardized_output)
+    logging.info(f"Summary payload added to {standardized_output} stream")
 
 def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     logging.info("Normalizing Data")
@@ -100,7 +101,6 @@ def create_summary():
     print(content)
     
     return content
-#coseine similiarty and TF-IDF
 
 def main():
     logging.info("Reading Isirid Dataset")
@@ -119,18 +119,19 @@ def main():
 
 
         logging.info("Querying LLM")
-        #summary = create_summary()
+        summary = None#create_summary()
         metadata = {
             "agent_name": AGENT_VERSION,
             "timestamp_utc": datetime.now(timezone.utc),
             "source": {
-                "summary": "gpt-4.1-nano"
+                "summary-llm": "gpt-4.1-nano"
             }
         }
         standardized_output = {
-            "stub" : message_read
+            "metadata": metadata,
+            "summary" : summary
         }
-        redis_output(standardized_output)
+        # redis_output(standardized_output)
         
 
 
