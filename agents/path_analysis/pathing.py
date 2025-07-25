@@ -17,6 +17,13 @@ def pixel_to_latlon(row, col, transform, crs):
     lon, lat = transformer.transform(x, y)
     return lat, lon
 
+# Convert DEM bounds (in projected CRS) to lat/lon bounding box
+def bounds_to_latlon_bounds(bounds, dem_crs):
+    transformer = Transformer.from_crs(dem_crs, "EPSG:4326", always_xy=True)
+    west, south = transformer.transform(bounds.left, bounds.bottom)
+    east, north = transformer.transform(bounds.right, bounds.top)
+    return north, south, east, west
+
 # Check if a given (lat, lon) point lies within the bounds of the DEM (cost map)
 def latlon_in_bounds(lat, lon, transform, crs, rows, cols):
     transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
