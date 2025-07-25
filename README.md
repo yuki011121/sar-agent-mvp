@@ -72,7 +72,7 @@ The second command retrieves the most recent entry from that stream.
 
 ### Troubleshooting
 - SolverProblemError during poetry install or poetry add
-This is a dependency version conflict. Our project has a specific Python requirement because of the pyautogen library.
+This is a dependency version conflict. Our project has a specific Python requirement because of the ag2 library.
 Solution: Open the pyproject.toml file and ensure your project's Python version is set to python = ">=3.10, <3.14". Your system's base python3 must also fall within this range.
 - ModuleNotFoundError (e.g., No module named 'redis'): This usually means the virtual environment is corrupted or out of sync. A reliable fix is to rebuild it:
 ```

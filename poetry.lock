@@ -168,7 +168,7 @@ optional = false
 python-versions = ">=3.8"
 
 [[package]]
-name = "pyautogen"
+name = "ag2"
 version = "0.9"
 description = "A programming framework for agentic AI"
 category = "main"
@@ -421,7 +421,7 @@ httpcore = []
 httpx = []
 idna = []
 packaging = []
-pyautogen = []
+ag2 = []
 pydantic = []
 pydantic-core = []
 python-dotenv = []

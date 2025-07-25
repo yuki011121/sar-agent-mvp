@@ -8,7 +8,7 @@ authors = ["yuki011121 <tyy17723818165@126.com>"]
 python = ">=3.10, <3.14" 
 requests = "^2.32.4"
 redis = "^6.2.0"
-pyautogen = "^0.9"
+ag2 = "^0.9"
 
 [tool.poetry.dev-dependencies]
 
