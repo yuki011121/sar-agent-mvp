@@ -21,3 +21,6 @@ venv/
 
 # Large DEM files
 agents/path_analysis/data/*.tif
+
+#OSMnx cache
+cache/
