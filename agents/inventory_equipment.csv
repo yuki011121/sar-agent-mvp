@@ -1,0 +1,11 @@
+item_id,type,category,qty_total,qty_available,notes
+EQ001,truck,transport,5,2,2 trucks currently in use in Sector A
+EQ002,radio,communication,20,15,All VHF band radios
+EQ003,first_aid_kit,medical,50,5,Many kits deployed to remote zones
+EQ004,blanket,shelter,100,100,Fully stocked
+EQ005,sleeping_bag,shelter,75,30,45 are currently deployed at base camps
+EQ006,water_bottle,supplies,200,150,Some bottles past expiration date
+EQ007,food_pack,supplies,300,0,Replenishment pending delivery
+EQ008,med_kit_advanced,medical,25,10,Includes EpiPens and trauma supplies
+EQ009,generator,power,10,4,Requires special handling team
+EQ010,flashlight,lighting,100,100,Fresh batteries included
