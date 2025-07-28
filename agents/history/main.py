@@ -21,7 +21,7 @@ AGENT_VERSION = "history-agent-v1.0"
 OPENAI_KEY = os.getenv("OPENAI_KEY", None)
 ISRID_COLUMNS = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category', 'Subject.Activity', 'Age',
                            'Sex', 'Subject.Status']
-
+TOP_K_MATCHES = 3
 last_msg_ID = None
 vectorizer = TfidfVectorizer()
 
@@ -67,7 +67,7 @@ def redis_input():
 
 def redis_output(standardized_output):
     redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
-    logging.info(f"Summary payload added to {standardized_output} stream")
+    logging.info(f"Summary + Action payload added to {standardized_output} stream")
 
 def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     logging.info("Normalizing Data")
@@ -78,17 +78,30 @@ def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
 
 
-def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict):
+def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict) -> pd.DataFrame:
     query_as_string = " ".join(queryJSON.values()).lower()
     query_vectorized = vectorizer.transform([query_as_string])
     similarities = cosine_similarity(query_vectorized, vectorized_rows)[0]
-    max_index = np.argmax(similarities)
-    return data.iloc[max_index]
+    max_indexes = np.argsort(similarities)[::-1][:TOP_K_MATCHES]
+    return data.iloc[max_indexes]
 
+def verify_llm_response(response):
+    if hasattr(response, "error") and response.error is not None:
+        code = getattr(response.error, "code", "unknown")
+        message = getattr(response.error, "message", "No message provided")
+        raise Exception(f"Model error\nCode: {code}\nMessage: {message}")
 
-def create_summary(match: pd.Series):
-    dev_instructions = "You are a Search and Rescue expert tasked with giving summaries of a" \
-                    "previous search and rescue incident"
+def prompt_llm(matches: pd.DataFrame):
+    logging.info("Querying LLM")
+
+    #query llm for a summary of the top-k incident matches
+    dev_instructions = "You are a Search and Rescue expert tasked with giving a summary of a" \
+                    "previous search and rescue incidents"
+    user_instructions = f"Content: Here are some search and rescue incidents given in json form {matches.to_json()}.\n" \
+        f"JSON Format: json was converted from a pandas data frame. This means that each key is a column name mapped to " \
+        f"a dictionary of a row number (the key) to the value for that column.\n" \
+        f"Note: that the data source value is abbreviated.\n" \
+        f"Output: exclude the incident ID for the summary."
     response = client.responses.create(
         model="gpt-4.1-nano",
         input=[
@@ -98,15 +111,53 @@ def create_summary(match: pd.Series):
             },
             {
                 "role": "user",
-                "content": f"Here is a search and rescue incident given in json form {match.to_json()}. Note that the data source value is abbreviated"
+                "content": user_instructions
             }
         ],
-        max_output_tokens = 200,
+        max_output_tokens = 300,
+        previous_response_id = None
     )
 
-    content = response.output[0].content[0].text
+    verify_llm_response(response)
+
+    summary = response.output[0].content[0].text
+
+    #query llm for actions to take based on summaries generated
+
+    dev_instructions = (
+        "You are a Search and Rescue expert. Based on summaries from a previous conversation, "
+        "your task is to provide actionable guidance to help locate a missing person. "
+        "Use your knowledge of search patterns, terrain analysis, behavioral profiling, "
+        "and logistical coordination to generate relevant suggestions for field teams."
+    )
+
+    user_instructions = (
+        "Task: Based on the previous summaries, give five concise and practical recommendations "
+        "for how to conduct a search to locate a missing person in a similar situation. "
+        "Focus on tactics, tools, and reasoning behind the suggestions. Be specific."
+    )
+
+    response = client.responses.create(
+        model="gpt-4.1-nano",
+        input=[
+            {
+                "role": "developer",
+                "content": dev_instructions
+            },
+            {
+                "role": "user",
+                "content": user_instructions
+            }
+        ],
+        max_output_tokens = 450,
+        previous_response_id = response.id
+    )
+
+    verify_llm_response(response)
     
-    return content
+    actions = response.output[0].content[0].text
+    
+    return summary, actions
 
 def main():
     logging.info("Reading Isirid Dataset")
@@ -118,22 +169,24 @@ def main():
     while True:
         message_read = redis_input()
 
-        match = find_match(isrid, vectorized_rows, message_read)
-
-        logging.info("Querying LLM")
-        summary = create_summary(match)
-        metadata = {
-            "agent_name": AGENT_VERSION,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "source": {
-                "summary-llm": "gpt-4.1-nano"
+        matches = find_match(isrid, vectorized_rows, message_read)
+        try:
+            summary, actions = prompt_llm(matches)
+            metadata = {
+                "agent_name": AGENT_VERSION,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "source": {
+                    "summary-llm": "gpt-4.1-nano"
+                }
             }
-        }
-        standardized_output = {
-            "metadata": metadata,
-            "summary" : summary
-        }
-        redis_output(standardized_output)
+            standardized_output = {
+                "metadata": metadata,
+                "summary" : summary,
+                "actions" : actions
+            }
+            redis_output(standardized_output)
+        except Exception as e:
+            logging.error(f"Error querying llm: {e}")
         
 
 
