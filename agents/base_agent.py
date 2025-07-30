@@ -3,6 +3,10 @@
 
 from autogen import AssistantAgent
 from abc import ABC, abstractmethod
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SARBaseAgent(AssistantAgent):
     def __init__(self, name, role, system_message, knowledge_base=None):
@@ -11,7 +15,6 @@ class SARBaseAgent(AssistantAgent):
             system_message=system_message,
             llm_config={
                 "temperature": 0.7,
-                "request_timeout": 600,
                 "seed": 42,
                 "config_list": self.get_config_list()
             }
@@ -22,14 +25,20 @@ class SARBaseAgent(AssistantAgent):
 
     def get_config_list(self):
         """Load configuration from environment variables"""
-        import os
-        from dotenv import load_dotenv
-        load_dotenv()
-        return [{
-            "model": "gpt-4",
-            "api_key": os.getenv("OPENAI_API_KEY"),
-            "deployment_name": os.getenv("DEPLOYMENT_NAME")
-        }]
+
+        provider = os.getenv("LLM_PROVIDER","google")
+
+        if provider == "google":
+            return [{
+                "model": "gemini-2.5-pro",
+                "api_key": os.getenv("GEMINI_API_KEY"),
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+            }]
+        else:
+            return [{
+                "model": "gpt-4.1-nano-2025-04-14",
+                "api_key": os.getenv("OPENAI_API_KEY"),
+            }]
 
 @abstractmethod
 def process_request(self, message):
