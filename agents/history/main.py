@@ -67,7 +67,7 @@ def redis_input():
 
 def redis_output(standardized_output):
     redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
-    logging.info(f"Summary + Action payload added to {standardized_output} stream")
+    logging.info(f"Summary + Action payload added to {STREAM_NAME_OUT} stream")
 
 def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
     logging.info("Normalizing Data")
@@ -93,15 +93,32 @@ def verify_llm_response(response):
 
 def prompt_llm(matches: pd.DataFrame):
     logging.info("Querying LLM")
+    NUMBER_OF_TIPS = 3
 
     #query llm for a summary of the top-k incident matches
-    dev_instructions = "You are a Search and Rescue expert tasked with giving a summary of a" \
-                    "previous search and rescue incidents"
-    user_instructions = f"Content: Here are some search and rescue incidents given in json form {matches.to_json()}.\n" \
-        f"JSON Format: json was converted from a pandas data frame. This means that each key is a column name mapped to " \
-        f"a dictionary of a row number (the key) to the value for that column.\n" \
-        f"Note: that the data source value is abbreviated.\n" \
-        f"Output: exclude the incident ID for the summary."
+    dev_instructions = (
+        "You are a Search and Rescue expert tasked with analyzing data from past incidents. "
+        "Your job is to generate concise summaries of search and rescue incidents based on structured input."
+    )
+
+    user_instructions = (
+        "Task: Summarize the following search and rescue incidents.\n\n" 
+        "Input Format: The data is provided in JSON format, converted from a pandas DataFrame. " 
+        "Each key is a column name, and its value is a dictionary where the keys are row indices and the values are the column entries.\n"
+        "a dictionary of a row number (the key) to the value for that column.\n" 
+        f"Example:\n"
+        '{\n  "location": {"0": "mountain trail", "1": "riverbank"},\n'
+        '  "outcome": {"0": "found alive", "1": "not found"}\n'
+        '}\n\n'
+        "Note: that the data source value is abbreviated.\n" 
+        f"Content:\n{matches.to_json()}\n\n" 
+        "Guidelines:\n"
+        "- Summarize the incidents clearly and concisely.\n"
+        "- Focus on key patterns (e.g., common terrain, outcomes, conditions).\n"
+        "- Do **not** include the incident ID in the summary.\n"
+        "Output Format: make the format so i"
+    )
+
     response = client.responses.create(
         model="gpt-4.1-nano",
         input=[
@@ -132,7 +149,7 @@ def prompt_llm(matches: pd.DataFrame):
     )
 
     user_instructions = (
-        "Task: Based on the previous summaries, give five concise and practical recommendations "
+        f"Task: Based on the previous summaries, give {NUMBER_OF_TIPS} concise and practical recommendations "
         "for how to conduct a search to locate a missing person in a similar situation. "
         "Focus on tactics, tools, and reasoning behind the suggestions. Be specific."
     )
