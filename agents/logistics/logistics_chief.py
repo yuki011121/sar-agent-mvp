@@ -1,5 +1,6 @@
 # agents/logistics/logistics_chief.py
 
+import csv
 import json
 from datetime import datetime
 from typing import Dict, Any
@@ -10,15 +11,17 @@ import redis
 import threading
 import time
 import logging
+from dotenv import load_dotenv
 
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 # Initialize Redis connection (used for both Pub/Sub and the Blackboard Stream)
 # TODO: implement redis_bus.py under the utils folder
+load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -30,6 +33,7 @@ except redis.exceptions.ConnectionError as e:
 
 class LogisticsChiefAgent(SARBaseAgent):
     def __init__(self, name="logistics_chief", knowledge_base=None):
+        # TODO: better system message/job description prompt needed 
         system_message = """
                          You are the Logistics Section Chief in a FEMA-aligned SAR operation.
 
@@ -52,12 +56,12 @@ class LogisticsChiefAgent(SARBaseAgent):
             knowledge_base = knowledge_base
         )
 
-        from dotenv import load_dotenv
-        load_dotenv()
-
         self.client = genai.Client(api_key = os.getenv("GEMINI_API_KEY"))
         self.pending_tasks = []
-        self.resource_snapshot = {} # TODO: Will likely need to initialize this by accessing CSV file or a database
+
+        self.inventory_equipment = self.load_csv("agents/inventory_equipment.csv")
+        self.inventory_personnel = self.load_csv("agents/inventory_personnel.csv")
+        # self.resource_snapshot = {}
 
         # Initialize Blackboard keys for global state
         redis_client.set("global:misson_status", "active")
@@ -65,16 +69,107 @@ class LogisticsChiefAgent(SARBaseAgent):
         #Append to a Redis stream representing the global blackboard
         redis_client.xadd("blackboard:updates", {"update": "System initialized"})
 
-        # Subscribe to the Pub/Sub channel for agent messages targeting the chief
+        # Thread 1: Listen to logistics requests
+        self.stream_thread = threading.Thread(target = self.listen_to_stream, daemon = True)
+        self.stream_thread.start()
+
+        # Thread 2: Pub/Sub fallback
+            # Subscribe to the Pub/Sub channel for agent messages targeting the chief
         self.pubsub = redis_client.pubsub()
         self.pubsub.subscribe("channel:lsc")
+        self.pubsub_thread = threading.Thread(target = self.listen_for_messages, daemon = True)
+        self.pubsub_thread.start()
 
-        # Start a background listener thread
-        self.listener_thread = threading.Thread(target=self.listen_for_messages, daemon=True)
-        self.listener_thread.start()
+    def load_csv(self, filepath: str) -> list:
+        """Load CSV data into memory"""
+
+        try:
+            with open(filepath, newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                logging.info(f"Successfully loaded {filepath}")
+                return list(reader)
+        except FileNotFoundError:
+            logging.warning(f"Could not find file: {filepath}")
+            return []
+        
+    def listen_to_stream(self):
+        """Continuously process Redis stream logistics.requests.raw"""
+
+        group = "logistics_group"
+        consumer = self.name
+        stream = "logistics.requests.raw"
+
+        try:
+            redis_client.xgroup_create(stream, group, id = '0', mkstream = True)
+        except redis.exceptions.ResponseError:
+            pass    # Group already exists
+
+        while True:
+            messages = redis_client.xreadgroup(group, consumer, {stream: ">"}, count = 1, block = 5000)
+            
+            for stream_key, entries in messages:
+                for msg_id, msg_data in entries:
+                    try:
+                        logging.debug(f"msg_data = {msg_data}")
+                        request = json.loads(msg_data["request"])
+                        response = self.handle_request(request)
+                        redis_client.xadd("logistics.dispatch.out", {"dispatch": json.dumps(response)})
+                        redis_client.xack(stream, group, msg_id)
+                    except Exception as e:
+                        logging.error(f"Error handling stream message: {e}")
+
+    # TODO: update handle_request to handle inventory_personnel as well
+    def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse request and allocate resources accordingly"""
+
+        logging.debug(f"request = {request}")
+
+        req_type = request.get("type")
+        logging.debug(f"req_type = {req_type}")
+        
+        quantity = int(request.get("qty", 0))
+        logging.debug(f"quantity = {quantity}")
+
+        if req_type is None or quantity <= 0:
+            return {"status": "error", "message": "Invalid request format"}
+        
+        for item in self.inventory_equipment:
+            if item["type"] == req_type:
+                available = int(item["qty_available"])
+
+                if available >= quantity:
+                    item["qty_available"] = str(available - quantity) 
+                    # TODO: Update quantity available in the CSV
+
+                    return {
+                        "status": "dispatched",
+                        "item_type": req_type,
+                        "qty": quantity,
+                        "notes": item.get("notes", ""),
+                        "timestamp": str(datetime.now())
+                    }
+                else:
+                    return {
+                        "status": "shortage",
+                        "requested": quantity,
+                        "available": available,
+                        "item_type": req_type,
+                        "timestamp": str(datetime.now())
+                    }
+        
+        return {
+            "status": "not_found",
+            "item_type": req_type,
+            "timestamp": str(datetime.now())
+        }
 
     def listen_for_messages(self):
-        # Listen continuously to the Pub/Sub channel and process messages as they arrive
+        """
+        Fallback listener for Pub/Sub
+        
+        Listens continuously to the Pub/Sub channel and process messages as they arrive
+        """
+
         for message in self.pubsub.listen():
             if message["type"] == "message":
                 try:
@@ -116,17 +211,16 @@ class LogisticsChiefAgent(SARBaseAgent):
             }
     
     def review_resource_status(self, params:Dict[str, Any]) -> Dict[str, Any]:
-        # Simulated status check
-        # TODO: implement a 15 minute timer for this
         return {
             "status": "success",
-            "resource": self.resource_snapshot,
-            "notes": "Snapshot retrieved, Update frequency: every 15 minutes."
+            "equipment_snapshot": self.inventory_equipment,
+            "personnel_snapshot": self.inventory_personnel,
+            "notes": "Snapshot retrieved"
         }
 
     def delegate_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         task = {
-            "assigned_to": params.get("assigned_to", "logistics_section_chief"),
+            "assigned_to": params.get("assigned_to", self.name),
             "description": params.get("description", "No details"),
             "priority": params.get("priority", "Medium"),
             "timestamp": str(datetime.now())
@@ -157,11 +251,11 @@ class LogisticsChiefAgent(SARBaseAgent):
                 "mission_status": current_status,
                 "pending_tasks": len(self.pending_tasks)
             }
-            redis_client.xadd("blackboard:updates", {"updates": json.dumps(update_message)})
+            redis_client.xadd("blackboard:updates", {"update": json.dumps(update_message)})
             time.sleep(60)
         
 
-# For standalone ttesting or when running in a Docker container
+# For standalone testing or when running in a Docker container
 if __name__ == "__main__":
     chief = LogisticsChiefAgent()
     chief.run()
