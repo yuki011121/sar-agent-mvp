@@ -1,0 +1,8 @@
+Run:
+- docker compose up -d
+- poetry run python -m agents.health.main
+
+Redis:
+docker exec -it sar-agent-mvp-redis-1 redis-cli
+XLEN health.assessment.raw
+XREVRANGE health.assessment.raw + - COUNT 1
