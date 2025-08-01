@@ -20,4 +20,4 @@ venv/
 *.env
 
 #Other
-./my_instructions.txt
+my_instructions.txt
