@@ -1,27 +1,50 @@
-# SAR Multi-Agent MVP
-A functional AI-powered multi-agent search and rescue prototype.
+# Update: New `shared` Folder + Agent Standardization
+I've added a **`shared/` folder** with two new core modules and updated **Weather Agent** to use `shared/a2a_envelope.py` for publishing.
 
-## Please Read Before Pushing Code
+## shared/a2a_envelope.py: A2A wrapper 
+function `wrap_envelope()` will put every message into a validated `envelope + payload` shape.  
+All agents publish Redis entries like:<br/>`{"body": "<json-stringified StandardMessage>"}` |
 
-To avoid conflicts and keep the codebase organized, **do not push your code directly to the `dev` branch**.
-Instead, please work on your own feature branch and submit a **Pull Request** to `dev`.
-### Example Workflow
-#### 1. Pull the latest `dev` branch:
+## shared/mcp_tools.py: MCP helper
+ It will help any agent that calls an LLM with tool-calling. <br/>`create_tool_use_request()` builds the request, `get_tool_call_from_response()` extracts `(tool_name, args)` from the reply. Supports OpenAI (`gpt-4.1-nano` default) and Gemini (`gemini-1.5-flash` default).
+ 
+## Todo
+
+- If your agent publishes to Redis → integrate A2A from `shared/a2a_envelope.py`
+- If your agent uses LLMs (e.g., `history analysis`, `health`)→ integrate both A2A + MCP from `shared/`.
+- Check the code comments in a2a_envelope.py and mcp_tools.py for usage examples
+## Steps to Integrate
+#### 1. Switch to your feature branch:
    ```
-   git checkout dev
-   git pull origin dev
+   git switch feature/history
    ```
-#### 2. Create your own feature branch from dev:
+#### 2. Merge the latest dev into your branch
+This will bring the new shared/ folder into your branch.
    ```
-git checkout -b feature/photo-agent
+git merge dev
    ```
-#### 3. Make changes, commit, and push to your branch:
+#### 3. Resolve conflicts
+You will likely see a conflict in:
 ```
-git add .
-git commit -m "Implement basic object detection"
-git push origin feature/photo-agent
+agents/weather/main.py
 ```
-#### 4. When you're done, open a Pull Request to merge into dev.
+This is because dev has the refactored Weather Agent using the new shared utils.
+
+
+If using VS Code:   
+Click “Accept Incoming Changes” for agents/weather/main.py
+
+#### 4. Adapt your own agent
+Now your branch has:
+```
+shared/a2a_envelope.py
+shared/mcp_tools.py
+```
+Update your history-analysis-agent/main.py:   
+Use wrap_envelope() from a2a_envelope to publish Redis messages
+and use create_tool_use_request(), get_tool_call_from_response() from mcp_tools.  
+#### 5. Commit your merge result
+
 
 ## Quick Start
 ### 1. Prerequisites
@@ -58,17 +81,19 @@ poetry install
 ### 3. Running an Agent
 Example: run the Weather Agent.
 ```
+source "$(poetry env info --path)/bin/activate"
 poetry run python -m agents.weather.main
 ```
 
 ### 4. Check Redis
 Open a new terminal window and run the following commands:
 ```
+docker exec -it sar-agent-mvp-redis-1 redis-cli
 XLEN weather.forecast.raw
 XREVRANGE weather.forecast.raw + - COUNT 1
 ```
-The first command shows the total number of entries in the weather.forecast.raw stream.
-The second command retrieves the most recent entry from that stream.
+The second command shows the total number of entries in the weather.forecast.raw stream.
+The third command retrieves the most recent entry from that stream.
 
 ### Troubleshooting
 - SolverProblemError during poetry install or poetry add
