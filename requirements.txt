@@ -1,3 +1,10 @@
+<<<<<<< HEAD
 openai>=1.0.0
 PyPDF2>=3.0.0
 python-dotenv>=1.0.0 
+=======
+pyautogen
+python-dotenv
+pytest
+autogen
+>>>>>>> fd8465ab0731fa3c15593596ad76ea98e71d6c23
