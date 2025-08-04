@@ -4,7 +4,7 @@ Quick test script to verify basic functionality without API calls
 """
 
 import os
-from Interview_agent import InterviewAnalystAgent
+from sar_project.Agents.Interview_agent import InterviewAnalystAgent
 
 def test_basic_functionality():
     """Test basic agent functionality without API calls"""
@@ -41,7 +41,7 @@ def test_basic_functionality():
             print(f"   {i}. ❌ Error: {e}")
     
     # Test PDF extraction (if file exists)
-    pdf_file = 'Mock Search 3-8-25 transcription 2.pdf'
+    pdf_file = '../Mock Search 3-8-25 transcription 2.pdf'
     if os.path.exists(pdf_file):
         print(f"\n📄 Testing PDF Extraction:")
         try:
@@ -94,7 +94,7 @@ def check_environment():
     print("=" * 40)
     
     # Check for .env file
-    if os.path.exists('.env'):
+    if os.path.exists('../.env'):
         print("   ✅ .env file found")
     else:
         print("   ⚠️  .env file not found - create one with your OPENAI_API_KEY")
@@ -109,7 +109,7 @@ def check_environment():
         print("   ❌ OPENAI_API_KEY not found - add it to your .env file")
     
     # Check for PDF file
-    pdf_file = 'Mock Search 3-8-25 transcription 2.pdf'
+    pdf_file = '../Mock Search 3-8-25 transcription 2.pdf'
     if os.path.exists(pdf_file):
         print(f"   ✅ Sample PDF file found: {pdf_file}")
     else:

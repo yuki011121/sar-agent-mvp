@@ -3,7 +3,7 @@
 Example usage of the Interview Analysis Agent
 """
 
-from Interview_agent import InterviewAnalystAgent
+from sar_project.Agents.Interview_agent import InterviewAnalystAgent
 import os
 from dotenv import load_dotenv
 import json

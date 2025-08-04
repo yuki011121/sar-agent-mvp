@@ -3,7 +3,7 @@
 Test script for the Interview Analysis Agent
 """
 
-from Interview_agent import InterviewAnalystAgent
+from sar_project.Agents.Interview_agent import InterviewAnalystAgent
 import os
 from dotenv import load_dotenv
 import json
@@ -48,7 +48,7 @@ def main():
     
     # Test full analysis
     print("\nStarting interview transcript analysis...")
-    transcript_file = 'Mock Search 3-8-25 transcription 2.pdf'
+    transcript_file = '../../../Mock Search 3-8-25 transcription 2.pdf'
     
     if os.path.exists(transcript_file):
         print(f"Analyzing file: {transcript_file}")
@@ -135,7 +135,7 @@ def main():
                 print("=" * 50)
             
             # Save detailed results
-            with open('analysis_results.json', 'w') as f:
+            with open('../../../analysis_results.json', 'w') as f:
                 json.dump(results, f, indent=2)
             print("\n📄 Detailed results saved to 'analysis_results.json'")
             
