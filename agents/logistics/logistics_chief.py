@@ -19,9 +19,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Initialize Redis connection (used for both Pub/Sub and the Blackboard Stream)
-# TODO: implement redis_bus.py under the utils folder
 load_dotenv()
+
+# Initialize Redis connection
+# TODO: implement redis_bus.py under the utils folder
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -61,24 +62,16 @@ class LogisticsChiefAgent(SARBaseAgent):
 
         self.inventory_equipment = self.load_csv("agents/inventory_equipment.csv")
         self.inventory_personnel = self.load_csv("agents/inventory_personnel.csv")
-        # self.resource_snapshot = {}
 
         # Initialize Blackboard keys for global state
-        redis_client.set("global:misson_status", "active")
+        redis_client.set("global:mission_status", "active")
 
         #Append to a Redis stream representing the global blackboard
         redis_client.xadd("blackboard:updates", {"update": "System initialized"})
 
-        # Thread 1: Listen to logistics requests
+        # Listen to logistics requests using a background listener thread
         self.stream_thread = threading.Thread(target = self.listen_to_stream, daemon = True)
         self.stream_thread.start()
-
-        # Thread 2: Pub/Sub fallback
-            # Subscribe to the Pub/Sub channel for agent messages targeting the chief
-        self.pubsub = redis_client.pubsub()
-        self.pubsub.subscribe("channel:lsc")
-        self.pubsub_thread = threading.Thread(target = self.listen_for_messages, daemon = True)
-        self.pubsub_thread.start()
 
     def load_csv(self, filepath: str) -> list:
         """Load CSV data into memory"""
@@ -92,7 +85,20 @@ class LogisticsChiefAgent(SARBaseAgent):
             logging.warning(f"Could not find file: {filepath}")
             return []
         
-    def listen_to_stream(self):
+    def save_csv(self, filepath: str, data: list) -> None:
+        """Writes updated inventory back to the CSV file."""
+
+        if not data:
+            logging.error(f"Attempted to write empty data to CSV")
+            return
+
+        with open(filepath, mode='w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=data[0].keys())
+            writer.writeheader()
+            writer.writerows(data)
+            logging.info(f"Successfully wrote updated data to {filepath}")
+        
+    def listen_to_stream(self) -> None:
         """Continuously process Redis stream logistics.requests.raw"""
 
         group = "logistics_group"
@@ -111,6 +117,7 @@ class LogisticsChiefAgent(SARBaseAgent):
                 for msg_id, msg_data in entries:
                     try:
                         logging.debug(f"msg_data = {msg_data}")
+
                         request = json.loads(msg_data["request"])
                         response = self.handle_request(request)
                         redis_client.xadd("logistics.dispatch.out", {"dispatch": json.dumps(response)})
@@ -118,32 +125,45 @@ class LogisticsChiefAgent(SARBaseAgent):
                     except Exception as e:
                         logging.error(f"Error handling stream message: {e}")
 
-    # TODO: update handle_request to handle inventory_personnel as well
-    def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse request and allocate resources accordingly"""
 
-        logging.debug(f"request = {request}")
+    def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Main router between equipment and personnel requests"""
+
+        logging.debug(f"[handle_request] request = {request}")
 
         req_type = request.get("type")
         logging.debug(f"req_type = {req_type}")
         
+        if req_type == "equipment":
+            return self.handle_equipment_request(request)
+        elif req_type == "personnel":
+            return self.handle_personnel_request(request)
+        else:
+            return {"status": "error", "message": f"Unknown request type: {req_type}"}
+        
+    def handle_equipment_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        req_item_type = request.get("item_type")
+        logging.debug(f"req_item_type = {req_item_type}")
+        
         quantity = int(request.get("qty", 0))
         logging.debug(f"quantity = {quantity}")
 
-        if req_type is None or quantity <= 0:
-            return {"status": "error", "message": "Invalid request format"}
+        if req_item_type is None or quantity <= 0:
+            return {"status": "error", "message": "Invalid equipment request"}
         
         for item in self.inventory_equipment:
-            if item["type"] == req_type:
+            if item["type"] == req_item_type:
                 available = int(item["qty_available"])
 
                 if available >= quantity:
                     item["qty_available"] = str(available - quantity) 
-                    # TODO: Update quantity available in the CSV
+
+                    self.save_csv("agents/inventory_equipment.csv", self.inventory_equipment)
 
                     return {
                         "status": "dispatched",
-                        "item_type": req_type,
+                        "category": "equipment",
+                        "item_type": req_item_type,
                         "qty": quantity,
                         "notes": item.get("notes", ""),
                         "timestamp": str(datetime.now())
@@ -151,39 +171,88 @@ class LogisticsChiefAgent(SARBaseAgent):
                 else:
                     return {
                         "status": "shortage",
+                        "category": "equipment",
                         "requested": quantity,
                         "available": available,
-                        "item_type": req_type,
+                        "item_type": req_item_type,
                         "timestamp": str(datetime.now())
                     }
         
         return {
             "status": "not_found",
-            "item_type": req_type,
+            "category": "equipment",
+            "item_type": req_item_type,
             "timestamp": str(datetime.now())
         }
 
-    def listen_for_messages(self):
-        """
-        Fallback listener for Pub/Sub
+    def handle_personnel_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        req_skill = request.get("skill")
+        logging.debug(f"req_skill = {req_skill}")
         
-        Listens continuously to the Pub/Sub channel and process messages as they arrive
-        """
+        quantity = int(request.get("qty", 0))
+        logging.debug(f"quantity = {quantity}")
 
-        for message in self.pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    logging.info(f"[LSC Listener] Received message: {data}")
+        if req_skill is None or quantity <= 0:
+            return {"status": "error", "message": "Invalid personnel request"}
 
-                    # Process the message through process_request
-                    response = self.process_request(data)
-                    logging.info(f"[LSC Listener] Processed response: {response}")
+        matching_teams = []
+        for team in self.inventory_personnel:
+            logging.debug(f"team = {team}")
 
-                    # Write response to the blackboard stream
-                    redis_client.xadd("blackboard:updates", {"update": json.dumps(response)})
-                except Exception as e:
-                    logging.info(f"[LSC Listener] Error processing message: {e}")
+            skills = [s.strip() for s in team["skills"].split(",")]
+            logging.debug(f"skills = {skills}")
+
+            available = int(team["qty_available"])
+            logging.debug(f"available = {available}")
+            # TODO: error check if available is negative in the case of bad data
+
+            if req_skill in skills and available > 0:
+                matching_teams.append((team, available))
+
+        if not matching_teams:
+            return {
+                "status": "not_found",
+                "category": "personnel",
+                "skill": req_skill,
+                "timestamp": str(datetime.now())
+            }
+        
+        total_allocated = 0
+        dispatched_teams = []
+
+        for team, available in matching_teams:
+            allocate = min(quantity - total_allocated, available)
+            logging.debug(f"allocate = {allocate}")
+            
+            team["qty_available"] = str(available - allocate)
+            dispatched_teams.append(team["team_id"])
+            total_allocated += allocate
+
+            if total_allocated >= quantity:
+                break
+
+        self.save_csv("agents/inventory_personnel.csv", self.inventory_personnel)
+
+        if total_allocated < quantity:
+            return {
+                "status": "partial_dispatch",
+                "category": "personnel",
+                "skill": req_skill,
+                "dispatched_qty": total_allocated,
+                "requested_qty": quantity,
+                "teams": dispatched_teams,
+                "timestamp": str(datetime.now())
+            }
+        
+        return {
+            "status": "dispatched",
+            "category": "personnel",
+            "skill": req_skill,
+            "dispatched_qty": total_allocated,
+            "teams": dispatched_teams,
+            "timestamp": str(datetime.now())           
+        }
+        
 
     def process_request(self, message: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -210,7 +279,7 @@ class LogisticsChiefAgent(SARBaseAgent):
                 "message": str(e)
             }
     
-    def review_resource_status(self, params:Dict[str, Any]) -> Dict[str, Any]:
+    def review_resource_status(self) -> Dict[str, Any]:
         return {
             "status": "success",
             "equipment_snapshot": self.inventory_equipment,
@@ -246,11 +315,13 @@ class LogisticsChiefAgent(SARBaseAgent):
         while True:
             # Update the mission status every minute
             current_status = redis_client.get("global:mission_status")
+
             update_message = {
                 "timestamp": str(datetime.now()),
                 "mission_status": current_status,
                 "pending_tasks": len(self.pending_tasks)
             }
+
             redis_client.xadd("blackboard:updates", {"update": json.dumps(update_message)})
             time.sleep(60)
         
