@@ -1,18 +1,22 @@
 # Update: New `shared` Folder + Agent Standardization
-I've added a **`shared/` folder** with two new core modules and updated **Weather Agent** to use `shared/a2a_envelope.py` for publishing.
+I've added a **`shared/` folder** with **three** new core modules and updated **Weather Agent** to use `shared/a2a_envelope.py`, `shared/redis_bus.py` for publishing.    
+
+## shared/redis_bus.py: Redis message bus  
+Class `RedisBus` wraps Redis Streams I/O for A2A messaging.  
+Agents should use `bus.publish()` to send a `StandardMessage`, and `bus.subscribe()` to consume messages reliably via consumer group.  
 
 ## shared/a2a_envelope.py: A2A wrapper 
 function `wrap_envelope()` will put every message into a validated `envelope + payload` shape.  
 All agents publish Redis entries like:<br/>`{"body": "<json-stringified StandardMessage>"}` |
 
 ## shared/mcp_tools.py: MCP helper
- It will help any agent that calls an LLM with tool-calling. <br/>`create_tool_use_request()` builds the request, `get_tool_call_from_response()` extracts `(tool_name, args)` from the reply. Supports OpenAI (`gpt-4.1-nano` default) and Gemini (`gemini-1.5-flash` default).
+It will help any agent that calls an LLM with tool-calling. <br/>`create_tool_use_request()` builds the request, `get_tool_call_from_response()` extracts `(tool_name, args)` from the reply. Supports OpenAI (`gpt-4.1-nano` default) and Gemini (`gemini-1.5-flash` default).
  
 ## Todo
+- Check code comments in `a2a_envelope.py`, `mcp_tools.py`, and `redis_bus.py` for usage examples
+- If your agent publishes to or consumes from Redis → integrate RedisBus, A2A from `shared/redis_bus.py` and `shared/a2a_envelope.py`
+- If your agent uses LLMs (e.g., `history analysis`, `health`)→ integrate RedisBus, A2A + MCP from `shared/`.
 
-- If your agent publishes to Redis → integrate A2A from `shared/a2a_envelope.py`
-- If your agent uses LLMs (e.g., `history analysis`, `health`)→ integrate both A2A + MCP from `shared/`.
-- Check the code comments in a2a_envelope.py and mcp_tools.py for usage examples
 ## Steps to Integrate
 #### 1. Switch to your feature branch:
    ```
@@ -37,12 +41,13 @@ Click “Accept Incoming Changes” for agents/weather/main.py
 #### 4. Adapt your own agent
 Now your branch has:
 ```
+shared/redis_bus.py 
 shared/a2a_envelope.py
 shared/mcp_tools.py
 ```
 Update your history-analysis-agent/main.py:   
-Use wrap_envelope() from a2a_envelope to publish Redis messages
-and use create_tool_use_request(), get_tool_call_from_response() from mcp_tools.  
+- Wrap every payload from a2a_envelope with wrap_envelope() and publish via RedisBus.   
+- Use create_tool_use_request(), get_tool_call_from_response() from mcp_tools.(Only for agents call an LLM)
 #### 5. Commit your merge result    
     
     
