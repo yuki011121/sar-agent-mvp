@@ -8,7 +8,7 @@ The Health Agent:
 - Performs initial medical assessments when a new mission begins
 - Continuously updates health status based on real-time field observations
 - Triggers alerts and requests medical supplies when situations become critical
-- Uses LLM (GPT-4) to analyze complex health scenarios
+- Uses LLM (Gemini Flash) to analyze complex health scenarios
 
 ## Architecture
 
@@ -37,7 +37,7 @@ The Health Agent:
 Environment variables:
 - `REDIS_URL`: Redis connection URL (default: redis://localhost:6379)
 - `UPDATE_INTERVAL_SECONDS`: Assessment frequency (default: 60)
-- `OPENAI_API_KEY`: OpenAI API key for GPT-4 (optional, uses mock data if not set)
+- `GOOGLE_API_KEY`: Google API key for Gemini Flash (optional, uses mock data if not set)
 
 ## Running the Agent
 
@@ -96,5 +96,5 @@ python agents/health/main.py
 ## Development Notes
 
 - Uses hardcoded data when Redis streams are empty (for testing)
-- Falls back to mock LLM responses when OPENAI_API_KEY is not set
+- Falls back to mock LLM responses when GOOGLE_API_KEY is not set
 - Designed for containerization with Docker

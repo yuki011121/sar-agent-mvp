@@ -7,13 +7,13 @@ import json
 import redis
 from datetime import datetime
 from typing import Dict, List, Optional
-import openai
+import google.generativeai as genai
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 60))  # Check every minute
 AGENT_VERSION = "health-agent-v1.0"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Redis stream names
 MISSION_STREAM = "mission.new"
@@ -37,11 +37,13 @@ except redis.exceptions.ConnectionError as e:
     logging.error(f"Could not connect to Redis: {e}")
     exit(1)
 
-# Initialize OpenAI
-if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+# Initialize Google Gemini
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
-    logging.warning("OPENAI_API_KEY not set. Using mock LLM responses.")
+    logging.warning("GOOGLE_API_KEY not set. Using mock LLM responses.")
+    model = None
 
 
 class HealthProfile:
@@ -141,7 +143,7 @@ Consider factors like:
 
 def call_llm(prompt: str) -> Dict:
     """Call the LLM and parse the response"""
-    if not OPENAI_API_KEY:
+    if not GOOGLE_API_KEY or model is None:
         # Mock response for testing without API key
         return {
             "risk_level": "MEDIUM",
@@ -167,18 +169,20 @@ def call_llm(prompt: str) -> Dict:
         }
     
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a medical assessment AI for search and rescue operations."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=1000
+        # Create system prompt
+        system_prompt = "You are a medical assessment AI for search and rescue operations. Respond only with valid JSON."
+        
+        # Generate response using Gemini
+        response = model.generate_content(
+            f"{system_prompt}\n\n{prompt}",
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=1000
+            )
         )
         
         # Parse the JSON response
-        content = response.choices[0].message.content
+        content = response.text
         return json.loads(content)
     
     except Exception as e:
