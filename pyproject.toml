@@ -10,6 +10,7 @@ python = ">=3.10, <3.14"
 requests = "^2.32.4"
 redis = "^6.2.0"
 pyautogen = "^0.9"
+google-generativeai = "^0.8.5"
 
 [tool.poetry.dev-dependencies]
 
