@@ -7,6 +7,7 @@ Wrap payloads in a single, validated structure that every agent publishes to Red
 """
 import uuid
 import json
+import logging
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ValidationError
 class SourceAgent(BaseModel):
