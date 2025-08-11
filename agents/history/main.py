@@ -91,33 +91,41 @@ def verify_llm_response(response):
         message = getattr(response.error, "message", "No message provided")
         raise Exception(f"Model error\nCode: {code}\nMessage: {message}")
 
-def prompt_llm(matches: pd.DataFrame):
+def prompt_llm(matches: pd.DataFrame, query: dict):
     logging.info("Querying LLM")
     NUMBER_OF_TIPS = 3
 
     #query llm for a summary of the top-k incident matches
     dev_instructions = (
-        "You are a Search and Rescue expert tasked with analyzing data from past incidents. "
-        "Your job is to generate concise summaries of search and rescue incidents based on structured input."
+        "You are a Search and Rescue expert. "
+        "You have been asked to analyze a set of past incidents that were retrieved because they are similar to a specific search and rescue query. "
+        "Your task is to summarize the matched incidents and highlight how they relate to the original query."
     )
 
     user_instructions = (
-        "Task: Summarize the following search and rescue incidents.\n\n" 
-        "Input Format: The data is provided in JSON format, converted from a pandas DataFrame. " 
-        "Each key is a column name, and its value is a dictionary where the keys are row indices and the values are the column entries.\n"
-        "a dictionary of a row number (the key) to the value for that column.\n" 
+        "Task: Summarize the following search and rescue incidents and explain how they relate to the provided query.\n\n"
+
+        "Input Format:\n"
+        "- The matching incidents are provided in JSON format, converted from a pandas DataFrame.\n"
+        "- The query is a Python dictionary converted to a string.\n"
+        "- Each key in the incident JSON is a column name, and its value is a dictionary mapping row indices to cell values.\n\n"
+
         f"Example:\n"
         '{\n  "location": {"0": "mountain trail", "1": "riverbank"},\n'
         '  "outcome": {"0": "found alive", "1": "not found"}\n'
         '}\n\n'
-        "Note: that the data source value is abbreviated.\n" 
-        f"Content:\n{matches.to_json()}\n\n" 
+        
+        "Note: Some column values (e.g., data source) may be abbreviated.\n\n"
+
+        f"Query Used:\n{str(query)}\n\n"
+        f"Matching Incidents:\n{matches.to_json()}\n\n"
+
         "Guidelines:\n"
-        "- Summarize the incidents clearly and concisely.\n"
-        "- Focus on key patterns (e.g., common terrain, outcomes, conditions).\n"
-        "- Do **not** include the incident ID in the summary.\n"
-        "Output Format: make the format so i"
-    )
+        "- Provide a clear and concise summary of the incidents.\n"
+        "- Highlight patterns that are relevant to the query (e.g., terrain, timing, outcome).\n"
+        "- Mention any trends or correlations between the incidents and the query.\n"
+        "- Do **not** include the incident ID in your summary.\n"
+        )
 
     response = client.responses.create(
         model="gpt-4.1-nano",
@@ -140,18 +148,23 @@ def prompt_llm(matches: pd.DataFrame):
     summary = response.output[0].content[0].text
 
     #query llm for actions to take based on summaries generated
-
+    
     dev_instructions = (
-        "You are a Search and Rescue expert. Based on summaries from a previous conversation, "
-        "your task is to provide actionable guidance to help locate a missing person. "
-        "Use your knowledge of search patterns, terrain analysis, behavioral profiling, "
-        "and logistical coordination to generate relevant suggestions for field teams."
+        "You are a Search and Rescue expert. Based on the summaries and the original query from a previous conversation, "
+        "your task is to provide actionable field recommendations to locate a missing person. "
+        "Use your expertise in search patterns, terrain analysis, behavioral profiling, and logistics "
+        "to generate specific and practical suggestions tailored to the query context."
     )
 
+
     user_instructions = (
-        f"Task: Based on the previous summaries, give {NUMBER_OF_TIPS} concise and practical recommendations "
-        "for how to conduct a search to locate a missing person in a similar situation. "
-        "Focus on tactics, tools, and reasoning behind the suggestions. Be specific."
+        f"Task: Based on the previous summaries and the following search query, give {NUMBER_OF_TIPS} concise and practical "
+        "recommendations for conducting a search to locate the missing person.\n\n"
+
+        "Guidelines:\n"
+        "- Tailor each tip to the specific query details (terrain, subject profile, etc.).\n"
+        "- Include reasoning for each recommendation.\n"
+        "- Be specific and actionable.\n"
     )
 
     response = client.responses.create(
@@ -188,7 +201,7 @@ def main():
 
         matches = find_match(isrid, vectorized_rows, message_read)
         try:
-            summary, actions = prompt_llm(matches)
+            summary, actions = prompt_llm(matches, message_read)
             metadata = {
                 "agent_name": AGENT_VERSION,
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -202,6 +215,7 @@ def main():
                 "actions" : actions
             }
             redis_output(standardized_output)
+            print(standardized_output)
         except Exception as e:
             logging.error(f"Error querying llm: {e}")
         
