@@ -62,7 +62,7 @@ class RedisBus:
             self.client.xgroup_create(stream_name, group_name, id='0', mkstream=True)
             logger.info(f"Created consumer group '{group_name}' on stream '{stream_name}'.")
         except redis.exceptions.ResponseError as e:
-            if b"BUSYGROUP" in e.args[0]:
+            if "BUSYGROUP" in e.args[0]:
                 logger.debug(f"Group '{group_name}' on stream '{stream_name}' already exists.")
             else:
                 raise
