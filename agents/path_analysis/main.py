@@ -2,6 +2,7 @@ import networkx as nx
 from agents.path_analysis.dem_utils import *
 from agents.path_analysis.osm_utils import *
 from agents.path_analysis.pathing import * 
+from agents.path_analysis.llm import * 
 
 def main():
     print("Path Analysis Agent: Starting...")
@@ -33,12 +34,32 @@ def main():
     G = add_pois_to_graph(G, crs, (west, south, east, north))
 
     print("Visualizing graph and terrain...")
+
+    lon, lat = -120.6605, 35.2980
+    k = 3
+    paths = plan_paths_to_all_pois_from_latlon_with_edges(G, lon, lat, crs)
+
+    top_paths = sorted(paths, key=lambda x: x[3])[:k]
+
+    path_data= extract_paths_metadata(G, top_paths, crs)
+    #print(path_data)
+
     visualize_graph_with_array(
         G,
-        raster_array=elevation,         
-        transform=transform,           
-        title='OSM Graph on DEM',
+        raster_array=elevation,
+        transform=transform,
+        title='OSM Graph with Top SAR Paths',
+        paths=top_paths
     )
+
+
+    llm_summary = summarize_multiple_paths_with_llm(path_data)
+    # for summary in llm_summary:
+    #     print(summary)
+
+    final_data = prepare_path_for_redis(path_data, llm_summary)
+    print(final_data)
+
 
     print("Path Analysis Agent: Done.")
 

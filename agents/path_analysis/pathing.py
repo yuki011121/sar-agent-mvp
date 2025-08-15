@@ -1,21 +1,9 @@
-import heapq
-import numpy as np
-from rasterio.transform import rowcol, xy
+import osmnx as ox
+import geopandas as gpd
+from shapely.geometry import Point
+import pyproj
 from pyproj import Transformer
-
-# Convert geographic coordinates (lat, lon) to raster pixel coordinates (row, col)
-def latlon_to_pixel(lat, lon, transform, dem_crs):
-    transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
-    x, y = transformer.transform(lon, lat)
-    row, col = rowcol(transform, x, y)
-    return row, col
-
-# Convert raster pixel coordinates (row, col) to geographic coordinates (lat, lon)
-def pixel_to_latlon(row, col, transform, crs):
-    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-    x, y = xy(transform, row, col)
-    lon, lat = transformer.transform(x, y)
-    return lat, lon
+import networkx as nx
 
 # Convert DEM bounds (in projected CRS) to lat/lon bounding box
 def bounds_to_latlon_bounds(bounds, dem_crs):
@@ -24,73 +12,35 @@ def bounds_to_latlon_bounds(bounds, dem_crs):
     east, north = transformer.transform(bounds.right, bounds.top)
     return north, south, east, west
 
-# Check if a given (lat, lon) point lies within the bounds of the DEM (cost map)
-def latlon_in_bounds(lat, lon, transform, crs, rows, cols):
-    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-    x, y = transformer.transform(lon, lat)
-    row, col = rowcol(transform, x, y)
-    return (0 <= row < rows) and (0 <= col < cols)
+def get_nearest_node_from_latlon(G, lon, lat, crs):
 
-# Calculate Octile distance heuristic between two points for pathfinding
-def heuristic(a, b):
-    D = 1
-    D2 = np.sqrt(2)
-    dx = abs(a[0] - b[0])
-    dy = abs(a[1] - b[1])
-    return D * (dx + dy) + (D2 - 2 * D) * min(dx, dy)
+    # Create a GeoSeries and project it
+    point = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs)
+    x, y = point.geometry.iloc[0].x, point.geometry.iloc[0].y
 
-# Perform A* search on a cost map to find the lowest-cost path from start to goal given in lat/lon
-def a_star(cost_map, start_latlon, goal_latlon, transform, crs):
-    rows, cols = cost_map.shape
-    if not latlon_in_bounds(*start_latlon, transform, crs, rows, cols):
-        raise ValueError("Start location is outside the DEM bounds")
-    if not latlon_in_bounds(*goal_latlon, transform, crs, rows, cols):
-        raise ValueError("Goal location is outside the DEM bounds")
-    
-    start = latlon_to_pixel(*start_latlon, transform, crs)
-    goal = latlon_to_pixel(*goal_latlon, transform, crs)
+    # Find nearest node in projected graph
+    nearest_node = ox.distance.nearest_nodes(G, X=x, Y=y)
+    return nearest_node
 
-    rows, cols = cost_map.shape
-    visited = set()
-    came_from = {}
-    g_score = {start: 0}
+def plan_paths_to_all_pois_from_latlon_with_edges(G, lon, lat, crs, weight="cost"):
+    source_node = get_nearest_node_from_latlon(G, lon, lat, crs)
+    poi_nodes = [n for n, d in G.nodes(data=True) if d.get("is_poi")]
 
-    open_set = []
-    heapq.heappush(open_set, (heuristic(start, goal), 0, start))
-
-    directions = [(-1, 0), (1, 0), (0, -1), (0, 1),
-                (-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    while open_set:
-        f, current_g, current = heapq.heappop(open_set)
-
-        if current in visited:
+    results = []
+    for poi_node in poi_nodes:
+        try:
+            path = nx.shortest_path(G, source=source_node, target=poi_node, weight=weight)
+            edges = []
+            total_cost = 0.0
+            for u, v in zip(path[:-1], path[1:]):
+                best_k = min(
+                    G[u][v].keys(),
+                    key=lambda k: G[u][v][k].get(weight, float("inf"))
+                )
+                edge_data = G[u][v][best_k]
+                edges.append((u, v, best_k, edge_data))
+                total_cost += edge_data.get(weight, 0.0)
+            results.append((poi_node, path, edges, total_cost))
+        except nx.NetworkXNoPath:
             continue
-        visited.add(current)
-
-        if current == goal:
-            path_px = [current]
-            while current in came_from:
-                current = came_from[current]
-                path_px.append(current)
-            path_px.reverse()
-
-            path_latlon = [pixel_to_latlon(r, c, transform, crs) for r, c in path_px]
-            return path_latlon
-
-        for dx, dy in directions:
-            neighbor = (current[0] + dx, current[1] + dy)
-            if not (0 <= neighbor[0] < rows and 0 <= neighbor[1] < cols):
-                continue
-            if np.isinf(cost_map[neighbor]):
-                continue  
-
-            tentative_g = current_g + cost_map[neighbor]
-
-            if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                g_score[neighbor] = tentative_g
-                priority = tentative_g + heuristic(neighbor, goal)
-                heapq.heappush(open_set, (priority, tentative_g, neighbor))
-                came_from[neighbor] = current
-
-    return None
+    return results

@@ -4,6 +4,7 @@ import numpy as np
 from rasterio.transform import rowcol
 from rasterio.plot import show
 import pandas as pd
+from pyproj import Transformer
 
 # Download walkable OSM graph using bounding box (based on DEM bounds)
 def load_osm_graph_from_bounds(north, south, east, west, network_type='all'):
@@ -66,7 +67,19 @@ def add_custom_edge_costs(G):
         slope = data.get("slope_deg", 0.0)
         grade = data.get("grade_abs", 0.0)
 
+        # Sanitize slope
+        if not isinstance(slope, (int, float)) or slope != slope:  # slope != slope is NaN check
+            slope = 0.0
+        else:
+            slope = abs(slope)
+
+        # Sanitize grade
+        if not isinstance(grade, (int, float)) or grade != grade:
+            grade = 0.0
+
+        # Compute cost safely
         cost = length * (1 + 0.1 * grade + 0.05 * slope)
+        cost = max(0.001, cost)  # Clamp to avoid zero or negative costs
 
         data["cost"] = float(cost)
 
@@ -118,18 +131,30 @@ def add_pois_to_graph(G, crs, bounds):
 
     return G
 
-# Visualize the graph over a terrain raster with POIs highlighted in red
+def get_edge_with_min_weight(G, u, v, weight="cost"):
+    best_k = None
+    best_val = float("inf")
+    for k, data in G[u][v].items():
+        val = data.get(weight, float("inf"))
+        if val < best_val:
+            best_val = val
+            best_k = k
+    return G[u][v][best_k]
+
 def visualize_graph_with_array(
     G,
     raster_array,
     transform,
     figsize=(10, 8),
     title=None,
+    paths=None  # Optional: list of (poi_node, path, cost)
 ):
     fig, ax = plt.subplots(figsize=figsize)
 
+    # Plot DEM raster
     show(raster_array, transform=transform, ax=ax, cmap='terrain')
 
+    # Plot the base graph
     ox.plot_graph(
         G,
         ax=ax,
@@ -142,12 +167,88 @@ def visualize_graph_with_array(
         close=False
     )
 
+    # Plot POIs in red
     poi_nodes = [n for n, d in G.nodes(data=True) if d.get('is_poi')]
     x = [G.nodes[n]['x'] for n in poi_nodes]
     y = [G.nodes[n]['y'] for n in poi_nodes]
-    ax.scatter(x, y, c='red', s=30, label='POI Nodes', zorder=3)
+    ax.scatter(x, y, c='red', s=5, label='POI Nodes', zorder=2)
+
+    # Plot paths if provided
+    if paths:
+        for i, (poi_node, path, edge_list, cost) in enumerate(paths):
+            for u, v, k, edge in edge_list:
+                if 'geometry' in edge:
+                    xs, ys = edge['geometry'].xy
+                else:
+                    xs = [G.nodes[u]['x'], G.nodes[v]['x']]
+                    ys = [G.nodes[u]['y'], G.nodes[v]['y']]
+                ax.plot(xs, ys, color='orange', linewidth=1.5, zorder=1)
+
+            # Mark the start node of the path
+            start_node = path[0]
+            ax.scatter(
+                G.nodes[start_node]['x'],
+                G.nodes[start_node]['y'],
+                c='lime',
+                s=5,
+                label=f'Start {i+1}' if i == 0 else "",
+                zorder=4
+            )
+
+            # Label the endpoint POI
+            raw_name = G.nodes[poi_node].get('poi_name')
+            poi_type = G.nodes[poi_node].get('poi_type', f'POI {i+1}')
+            poi_name = raw_name if raw_name and raw_name != "[Unnamed]" else poi_type
+            ax.text(
+                G.nodes[poi_node]['x'],
+                G.nodes[poi_node]['y'],
+                f"{poi_name}",
+                fontsize=8,
+                color='darkred',
+                zorder=3,
+                ha='left',
+                va='bottom'
+            )
 
     if title:
         ax.set_title(title)
     ax.legend()
     plt.show()
+
+
+def extract_paths_metadata(G, path_tuples, crs):
+    transformer = Transformer.from_crs(crs.to_string(), "EPSG:4326", always_xy=True)
+    results = []
+
+    for poi_node, path, edges, cost in path_tuples:
+        node_info = []
+        latlon_path = []
+
+        for n in path:
+            node_data = dict(G.nodes[n])
+            node_data["node"] = n
+            lon, lat = transformer.transform(node_data["x"], node_data["y"])
+            node_data["lat"] = lat
+            node_data["lon"] = lon
+            latlon_path.append((lat, lon))
+            node_info.append(node_data)
+
+        edge_info = []
+        for u, v, k, data in edges:
+            edge_data = dict(data)
+            edge_data["from_node"] = u
+            edge_data["to_node"] = v
+            edge_data["key"] = k
+            edge_info.append(edge_data)
+
+        results.append({
+            "poi_node": poi_node,
+            "poi_name": G.nodes[poi_node].get("poi_name", "[Unnamed]"),
+            "poi_type": G.nodes[poi_node].get("poi_type", "unknown"),
+            "total_cost": cost,
+            "path_latlon": [(n["lat"], n["lon"]) for n in node_info],
+            "path_nodes": node_info,
+            "path_edges": edge_info
+        })
+
+    return results
