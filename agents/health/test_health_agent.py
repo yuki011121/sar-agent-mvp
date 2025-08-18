@@ -5,12 +5,14 @@ Publishes sample data to Redis streams to test the agent
 """
 
 import json
-import redis
 import time
 from datetime import datetime
 
-# Connect to Redis
-redis_client = redis.Redis.from_url("redis://localhost:6379", decode_responses=True)
+from shared.redis_bus import RedisBus
+from shared.a2a_envelope import wrap_envelope, parse_message_from_stream
+
+# Connect to Redis via RedisBus
+bus = RedisBus("redis://localhost:6379")
 
 def publish_mission_data():
     """Publish a sample mission with person info"""
@@ -33,8 +35,14 @@ def publish_mission_data():
         }
     }
     
-    msg_id = redis_client.xadd("mission.new", {"data": json.dumps(mission_data)})
-    print(f"Published mission data with ID: {msg_id}")
+    std_msg = wrap_envelope(
+        payload=mission_data,
+        source_name="commander-agent",
+        source_version="test-1.0",
+        target_stream="mission.new",
+    )
+    bus.publish(std_msg)
+    print("Published mission data (A2A envelope) -> mission.new")
 
 def publish_field_observation():
     """Publish a field observation"""
@@ -53,16 +61,24 @@ def publish_field_observation():
         }
     }
     
-    msg_id = redis_client.xadd("field.observation.raw", {"data": json.dumps(observation_data)})
-    print(f"Published field observation with ID: {msg_id}")
+    std_msg = wrap_envelope(
+        payload=observation_data,
+        source_name="field-team-alpha",
+        source_version="test-1.0",
+        target_stream="field.observation.raw",
+    )
+    bus.publish(std_msg)
+    print("Published field observation (A2A envelope) -> field.observation.raw")
 
 def check_health_assessment():
     """Check if health assessment was generated"""
     try:
-        messages = redis_client.xrevrange("health.assessment.raw", count=1)
+        messages = bus.client.xrevrange("health.assessment.raw", count=1)
         if messages:
-            msg_id, data = messages[0]
-            assessment = json.loads(data['data'])
+            _msg_id, data = messages[0]
+            decoded = {k.decode(): v.decode() for k, v in data.items()}
+            std_msg = parse_message_from_stream(decoded)
+            assessment = std_msg.payload if std_msg else {}
             print("\nLatest Health Assessment:")
             print(json.dumps(assessment, indent=2))
         else:
@@ -73,10 +89,12 @@ def check_health_assessment():
 def check_logistics_request():
     """Check if logistics request was generated"""
     try:
-        messages = redis_client.xrevrange("logistics.requests.raw", count=1)
+        messages = bus.client.xrevrange("logistics.requests.raw", count=1)
         if messages:
-            msg_id, data = messages[0]
-            request = json.loads(data['data'])
+            _msg_id, data = messages[0]
+            decoded = {k.decode(): v.decode() for k, v in data.items()}
+            std_msg = parse_message_from_stream(decoded)
+            request = std_msg.payload if std_msg else {}
             print("\nLatest Logistics Request:")
             print(json.dumps(request, indent=2))
         else:

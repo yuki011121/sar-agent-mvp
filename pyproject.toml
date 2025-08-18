@@ -11,6 +11,7 @@ requests = "^2.32.4"
 redis = "^6.2.0"
 pyautogen = "^0.9"
 google-generativeai = "^0.8.5"
+pydantic = ">=2.6.0"
 
 [tool.poetry.dev-dependencies]
 
