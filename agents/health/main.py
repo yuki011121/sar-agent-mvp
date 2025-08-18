@@ -4,10 +4,13 @@ import os
 import time
 import logging
 import json
-import redis
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 import google.generativeai as genai
+
+from shared.redis_bus import RedisBus
+from shared.a2a_envelope import wrap_envelope, parse_message_from_stream
+from shared import mcp_tools
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -28,13 +31,12 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Initialize Redis
+# Initialize RedisBus
 try:
-    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
+    bus = RedisBus(REDIS_URL)
     logging.info(f"Successfully connected to Redis at {REDIS_URL}")
-except redis.exceptions.ConnectionError as e:
-    logging.error(f"Could not connect to Redis: {e}")
+except Exception as e:
+    logging.error(f"Could not connect to Redis via RedisBus: {e}")
     exit(1)
 
 # Initialize Google Gemini
@@ -77,15 +79,27 @@ class HealthProfile:
         }
 
 
-def read_latest_from_stream(stream_name: str, count: int = 10) -> List[Dict]:
-    """Read latest messages from a Redis stream"""
+def read_latest_payloads(stream_name: str, count: int = 10) -> List[Dict]:
+    """Read latest StandardMessages from a Redis stream and return their payloads.
+
+    Expects messages published with `RedisBus` using field 'body' that contains a
+    serialized `StandardMessage`. Falls back to empty list if parsing fails.
+    """
     try:
-        messages = redis_client.xrevrange(stream_name, count=count)
-        parsed_messages = []
-        for msg_id, data in messages:
-            if 'data' in data:
-                parsed_messages.append(json.loads(data['data']))
-        return parsed_messages
+        # Using the underlying bus client for a point-in-time read
+        messages = bus.client.xrevrange(stream_name, count=count)
+        parsed_payloads: List[Dict] = []
+        for _msg_id, raw_data in messages:
+            # xrevrange returns bytes as keys/values since decode_responses=False
+            decoded = {
+                (k.decode('utf-8') if isinstance(k, (bytes, bytearray)) else k):
+                (v.decode('utf-8') if isinstance(v, (bytes, bytearray)) else v)
+                for k, v in raw_data.items()
+            }
+            std_msg = parse_message_from_stream(decoded)
+            if std_msg:
+                parsed_payloads.append(std_msg.payload)
+        return parsed_payloads
     except Exception as e:
         logging.error(f"Error reading from stream {stream_name}: {e}")
         return []
@@ -142,9 +156,14 @@ Consider factors like:
 
 
 def call_llm(prompt: str) -> Dict:
-    """Call the LLM and parse the response"""
+    """Call the LLM and parse the response.
+
+    If a Gemini API key is available, attempts tool-calling via `shared.mcp_tools` with a
+    single tool `extract_health_assessment` whose arguments should match the expected
+    assessment JSON. Falls back to parsing raw JSON text if no tool call is made.
+    In environments without an API key, returns a deterministic mock.
+    """
     if not GOOGLE_API_KEY or model is None:
-        # Mock response for testing without API key
         return {
             "risk_level": "MEDIUM",
             "primary_health_risks": [
@@ -167,27 +186,66 @@ def call_llm(prompt: str) -> Dict:
             ],
             "logistics_request_needed": True
         }
-    
+
     try:
-        # Create system prompt
-        system_prompt = "You are a medical assessment AI for search and rescue operations. Respond only with valid JSON."
-        
-        # Generate response using Gemini
-        response = model.generate_content(
-            f"{system_prompt}\n\n{prompt}",
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=1000
-            )
+        system_instruction = (
+            "You are a medical assessment AI for search and rescue operations. "
+            "Prefer calling the provided function with a structured JSON argument."
         )
-        
-        # Parse the JSON response
+
+        extract_assessment_tool = {
+            "type": "function",
+            "function": {
+                "name": "extract_health_assessment",
+                "description": "Return the health assessment object extracted from the provided case details.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "assessment": {
+                            "type": "object",
+                            "properties": {
+                                "risk_level": {"type": "string"},
+                                "primary_health_risks": {"type": "array"},
+                                "recommended_actions": {"type": "array"},
+                                "required_supplies": {"type": "array"},
+                                "logistics_request_needed": {"type": "boolean"},
+                            },
+                            "required": [
+                                "risk_level",
+                                "primary_health_risks",
+                                "recommended_actions",
+                                "required_supplies",
+                                "logistics_request_needed",
+                            ],
+                        }
+                    },
+                    "required": ["assessment"],
+                },
+            },
+        }
+
+        req = mcp_tools.create_tool_use_request(
+            conversation=[{"role": "user", "content": prompt}],
+            tools=[extract_assessment_tool],
+            system_instruction=system_instruction,
+            provider="gemini",
+            model=os.getenv("GEMINI_DEFAULT_MODEL", "gemini-1.5-flash"),
+        )
+
+        response = model.generate_content(**req)
+
+        tool_call = mcp_tools.get_tool_call_from_response(response.to_dict(), provider="gemini")
+        if tool_call:
+            name, args = tool_call
+            if name == "extract_health_assessment" and isinstance(args, dict) and "assessment" in args:
+                return args["assessment"]
+
+        # Fallback: try to parse free-form JSON text
         content = response.text
         return json.loads(content)
-    
+
     except Exception as e:
         logging.error(f"Error calling LLM: {e}")
-        # Return a safe default
         return {
             "risk_level": "UNKNOWN",
             "primary_health_risks": [{"condition": "Unable to assess", "severity": "unknown", "reasoning": "LLM error"}],
@@ -198,46 +256,57 @@ def call_llm(prompt: str) -> Dict:
 
 
 def publish_health_assessment(assessment: Dict):
-    """Publish health assessment to Redis stream"""
-    message = {
+    """Publish health assessment to Redis stream via RedisBus using A2A envelope."""
+    payload = {
         "metadata": {
             "agent_name": AGENT_VERSION,
             "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            "assessment_type": "health_risk"
+            "assessment_type": "health_risk",
         },
-        "assessment": assessment
+        "assessment": assessment,
     }
-    
     try:
-        msg_id = redis_client.xadd(HEALTH_ASSESSMENT_STREAM, {"data": json.dumps(message)})
-        logging.info(f"Published health assessment to {HEALTH_ASSESSMENT_STREAM} with ID {msg_id}")
+        std_msg = wrap_envelope(
+            payload=payload,
+            source_name="health-agent",
+            source_version=AGENT_VERSION,
+            target_stream=HEALTH_ASSESSMENT_STREAM,
+        )
+        bus.publish(std_msg)
+        logging.info(f"Published health assessment to {HEALTH_ASSESSMENT_STREAM}")
     except Exception as e:
         logging.error(f"Failed to publish health assessment: {e}")
 
 
 def publish_logistics_request(assessment: Dict):
-    """Publish logistics request if needed"""
+    """Publish logistics request if needed via RedisBus using A2A envelope."""
     if not assessment.get("logistics_request_needed", False):
         return
-    
+
     supplies = assessment.get("required_supplies", [])
     if not supplies:
         return
-    
-    message = {
+
+    payload = {
         "metadata": {
             "agent_name": AGENT_VERSION,
             "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-            "request_type": "medical_supplies"
+            "request_type": "medical_supplies",
         },
-        "priority": "urgent" if assessment["risk_level"] == "HIGH" else "normal",
+        "priority": "urgent" if assessment.get("risk_level") == "HIGH" else "normal",
         "supplies_needed": supplies,
-        "reasoning": assessment.get("primary_health_risks", [])
+        "reasoning": assessment.get("primary_health_risks", []),
     }
-    
+
     try:
-        msg_id = redis_client.xadd(LOGISTICS_REQUEST_STREAM, {"data": json.dumps(message)})
-        logging.info(f"Published logistics request to {LOGISTICS_REQUEST_STREAM} with ID {msg_id}")
+        std_msg = wrap_envelope(
+            payload=payload,
+            source_name="health-agent",
+            source_version=AGENT_VERSION,
+            target_stream=LOGISTICS_REQUEST_STREAM,
+        )
+        bus.publish(std_msg)
+        logging.info(f"Published logistics request to {LOGISTICS_REQUEST_STREAM}")
     except Exception as e:
         logging.error(f"Failed to publish logistics request: {e}")
 
@@ -247,10 +316,9 @@ def process_health_assessment():
     health_profile = HealthProfile()
     
     # Read mission data (person info)
-    mission_data = read_latest_from_stream(MISSION_STREAM, count=1)
-    if mission_data:
-        # For now, using hardcoded data as fallback
-        person_info = mission_data[0].get("person", {})
+    mission_payloads = read_latest_payloads(MISSION_STREAM, count=1)
+    if mission_payloads:
+        person_info = mission_payloads[0].get("person", {})
     else:
         # Hardcoded example data
         person_info = {
@@ -265,10 +333,10 @@ def process_health_assessment():
     health_profile.update_person_info(person_info)
     
     # Read weather data
-    weather_data = read_latest_from_stream(WEATHER_STREAM, count=1)
-    if weather_data:
+    weather_payloads = read_latest_payloads(WEATHER_STREAM, count=1)
+    if weather_payloads:
         # Extract relevant weather info
-        forecasts = weather_data[0].get("forecasts", [])
+        forecasts = weather_payloads[0].get("forecasts", [])
         if forecasts:
             current_weather = {
                 "temperature": forecasts[0].get("temperature", 0),
@@ -289,8 +357,8 @@ def process_health_assessment():
         })
     
     # Read field observations
-    observations = read_latest_from_stream(OBSERVATION_STREAM, count=5)
-    if not observations:
+    observations_payloads = read_latest_payloads(OBSERVATION_STREAM, count=5)
+    if not observations_payloads:
         # Hardcoded observations for testing
         observations = [
             {
@@ -299,6 +367,9 @@ def process_health_assessment():
                 "location": "2 miles from last known position"
             }
         ]
+    else:
+        observations = [p.get("observation", p) for p in observations_payloads]
+
     for obs in observations:
         health_profile.add_observation(obs)
     
