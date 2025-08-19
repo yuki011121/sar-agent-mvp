@@ -4,13 +4,17 @@ import os
 import time
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 import google.generativeai as genai
+from dotenv import load_dotenv
+
 
 from shared.redis_bus import RedisBus
 from shared.a2a_envelope import wrap_envelope, parse_message_from_stream
 from shared import mcp_tools
+
+load_dotenv()
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -55,7 +59,7 @@ class HealthProfile:
         self.person_info = {}
         self.weather_data = {}
         self.field_observations = []
-        self.timestamp = datetime.utcnow().isoformat() + "Z"
+        self.timestamp = datetime.now(timezone.utc).isoformat()
     
     def update_person_info(self, info: Dict):
         """Update basic person information from mission data"""
@@ -96,9 +100,26 @@ def read_latest_payloads(stream_name: str, count: int = 10) -> List[Dict]:
                 (v.decode('utf-8') if isinstance(v, (bytes, bytearray)) else v)
                 for k, v in raw_data.items()
             }
+            
+            # Try to parse as StandardMessage first
             std_msg = parse_message_from_stream(decoded)
             if std_msg:
                 parsed_payloads.append(std_msg.payload)
+            else:
+                # Fallback: if no 'body' field, try to use the data directly
+                # This handles cases where data might be stored directly without envelope
+                if 'body' not in decoded:
+                    logging.warning(f"No 'body' field found in stream {stream_name}, trying direct data")
+                    # Look for any field that might contain JSON data
+                    for key, value in decoded.items():
+                        if key not in ['__source', '__version', '__timestamp']:  # Skip metadata fields
+                            try:
+                                if isinstance(value, str):
+                                    data = json.loads(value)
+                                    parsed_payloads.append(data)
+                                    break
+                            except json.JSONDecodeError:
+                                continue
         return parsed_payloads
     except Exception as e:
         logging.error(f"Error reading from stream {stream_name}: {e}")
@@ -201,25 +222,53 @@ def call_llm(prompt: str) -> Dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "assessment": {
-                            "type": "object",
-                            "properties": {
-                                "risk_level": {"type": "string"},
-                                "primary_health_risks": {"type": "array"},
-                                "recommended_actions": {"type": "array"},
-                                "required_supplies": {"type": "array"},
-                                "logistics_request_needed": {"type": "boolean"},
-                            },
-                            "required": [
-                                "risk_level",
-                                "primary_health_risks",
-                                "recommended_actions",
-                                "required_supplies",
-                                "logistics_request_needed",
-                            ],
-                        }
+                        "risk_level": {
+                            "type": "string",
+                            "enum": ["HIGH", "MEDIUM", "LOW"]
+                        },
+                        "primary_health_risks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "condition": {"type": "string"},
+                                    "severity": {
+                                        "type": "string",
+                                        "enum": ["critical", "serious", "moderate", "minor"]
+                                    },
+                                    "reasoning": {"type": "string"}
+                                },
+                                "required": ["condition", "severity", "reasoning"]
+                            }
+                        },
+                        "recommended_actions": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "required_supplies": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "item": {"type": "string"},
+                                    "quantity": {"type": "string"},
+                                    "priority": {
+                                        "type": "string",
+                                        "enum": ["urgent", "high", "medium", "low"]
+                                    }
+                                },
+                                "required": ["item", "quantity", "priority"]
+                            }
+                        },
+                        "logistics_request_needed": {"type": "boolean"}
                     },
-                    "required": ["assessment"],
+                    "required": [
+                        "risk_level",
+                        "primary_health_risks",
+                        "recommended_actions",
+                        "required_supplies",
+                        "logistics_request_needed",
+                    ],
                 },
             },
         }
@@ -237,8 +286,8 @@ def call_llm(prompt: str) -> Dict:
         tool_call = mcp_tools.get_tool_call_from_response(response.to_dict(), provider="gemini")
         if tool_call:
             name, args = tool_call
-            if name == "extract_health_assessment" and isinstance(args, dict) and "assessment" in args:
-                return args["assessment"]
+            if name == "extract_health_assessment" and isinstance(args, dict):
+                return args
 
         # Fallback: try to parse free-form JSON text
         content = response.text
@@ -246,9 +295,10 @@ def call_llm(prompt: str) -> Dict:
 
     except Exception as e:
         logging.error(f"Error calling LLM: {e}")
+        logging.error(f"LLM error details: {type(e).__name__}: {str(e)}")
         return {
             "risk_level": "UNKNOWN",
-            "primary_health_risks": [{"condition": "Unable to assess", "severity": "unknown", "reasoning": "LLM error"}],
+            "primary_health_risks": [{"condition": "Unable to assess", "severity": "unknown", "reasoning": f"LLM error: {str(e)}"}],
             "recommended_actions": ["Manual assessment required"],
             "required_supplies": [],
             "logistics_request_needed": False
@@ -260,7 +310,7 @@ def publish_health_assessment(assessment: Dict):
     payload = {
         "metadata": {
             "agent_name": AGENT_VERSION,
-            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "assessment_type": "health_risk",
         },
         "assessment": assessment,
@@ -290,7 +340,7 @@ def publish_logistics_request(assessment: Dict):
     payload = {
         "metadata": {
             "agent_name": AGENT_VERSION,
-            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "request_type": "medical_supplies",
         },
         "priority": "urgent" if assessment.get("risk_level") == "HIGH" else "normal",
@@ -317,8 +367,10 @@ def process_health_assessment():
     
     # Read mission data (person info)
     mission_payloads = read_latest_payloads(MISSION_STREAM, count=1)
+    logging.info(f"Read {len(mission_payloads)} mission payloads from {MISSION_STREAM}")
     if mission_payloads:
         person_info = mission_payloads[0].get("person", {})
+        logging.info(f"Using mission data: {person_info}")
     else:
         # Hardcoded example data
         person_info = {
@@ -330,6 +382,7 @@ def process_health_assessment():
             "time_missing": "36 hours",
             "last_seen": "mountain trail near summit"
         }
+        logging.info("Using hardcoded mission data")
     health_profile.update_person_info(person_info)
     
     # Read weather data
