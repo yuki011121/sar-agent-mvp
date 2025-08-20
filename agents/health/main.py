@@ -282,16 +282,41 @@ def call_llm(prompt: str) -> Dict:
         )
 
         response = model.generate_content(**req)
+        response_dict = response.to_dict()
 
-        tool_call = mcp_tools.get_tool_call_from_response(response.to_dict(), provider="gemini")
+        tool_call = mcp_tools.get_tool_call_from_response(response_dict, provider="gemini")
         if tool_call:
             name, args = tool_call
             if name == "extract_health_assessment" and isinstance(args, dict):
                 return args
 
-        # Fallback: try to parse free-form JSON text
-        content = response.text
-        return json.loads(content)
+        # If shared parser didn't find the tool call, scan parts locally (without editing shared code)
+        for cand in response_dict.get("candidates", []):
+            parts = (cand.get("content", {}) or {}).get("parts", []) or []
+            for part in parts:
+                call = part.get("functionCall") or part.get("function_call")
+                if call and call.get("name") == "extract_health_assessment":
+                    args = call.get("args", {})
+                    if isinstance(args, dict):
+                        return args
+
+        # Fallback: try to parse free-form JSON text without touching response.text
+        try:
+            candidates = response_dict.get("candidates", [])
+            text_parts = []
+            for cand in candidates:
+                parts = (cand.get("content", {}) or {}).get("parts", []) or []
+                for part in parts:
+                    if isinstance(part, dict) and "text" in part:
+                        text_parts.append(part["text"])
+            if text_parts:
+                combined_text = "\n".join(text_parts)
+                return json.loads(combined_text)
+        except Exception:
+            pass
+
+        # If no usable text, raise to outer handler to return a safe fallback
+        raise ValueError("No function call or JSON text found in Gemini response")
 
     except Exception as e:
         logging.error(f"Error calling LLM: {e}")

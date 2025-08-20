@@ -6,7 +6,7 @@ Run:
 Redis:
 docker exec -it sar-agent-mvp-redis-1 redis-cli
 XLEN health.assessment.raw
-XREVRANGE health.assessment.raw + - COUNT 1
+XREVRANGE health.assessment.raw + - COUNT 5
 
 
 
