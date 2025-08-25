@@ -1,19 +1,22 @@
 import os
 from dotenv import load_dotenv
 import json
+import re
 import google.generativeai as genai
+
+from shared.mcp_tools import create_tool_use_request, get_tool_call_from_response
 
 load_dotenv()
 
 api_key = os.getenv("API_KEY")
-
 if not api_key:
     raise ValueError("API_KEY not found. Make sure it's set in your .env file.")
-
 genai.configure(api_key=api_key)
 
-model = genai.GenerativeModel("gemini-1.5-flash")
+MODEL_NAME = os.getenv("GEN_TEXT_MODEL", "gemini-1.5-flash")
+model = genai.GenerativeModel(MODEL_NAME)
 
+# Summarize one path: IDs, cost/time, elevation stats, and unique OSM tags.
 def summarize_path_metadata(path_data):
     def collect_unique(k, path_edges):
         return sorted(set(str(e[k]) for e in path_edges if e.get(k) is not None))
@@ -49,50 +52,101 @@ def summarize_path_metadata(path_data):
         "widths": collect_unique("width", edge_data)
     }
 
-def summarize_multiple_paths_with_llm(latlon_paths):
-    summaries = []
+def _choose_summary_params_via_mcp(paths_metadata):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "summarize_paths",
+            "description": "Choose parameters for summarizing SAR paths.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {"type": "array", "items": {"type": "object"}},
+                    "style": {"type": "string", "enum": ["brief", "detailed", "field-ops"]},
+                    "audience": {"type": "string", "enum": ["dispatch", "field", "planning"]},
+                },
+                "required": ["paths"]
+            },
+        },
+    }]
 
+    req = create_tool_use_request(
+        conversation=[{
+            "role": "user",
+            "content": (
+                "Pick parameters (style, audience) to summarize these SAR paths. "
+                "Default to style='field-ops' and audience='field' if unsure.\n\n"
+                f"Paths JSON:\n{json.dumps(paths_metadata)[:12000]}"  
+            ),
+        }],
+        tools=tools,
+        system_instruction="You are a SAR planner. Select exactly one tool with JSON args.",
+        provider="gemini",
+        model=MODEL_NAME,  
+    )
+
+    resp = model.generate_content(
+        req["contents"],
+        tools=req["tools"],
+        tool_config={"function_calling_config": {"mode": "AUTO"}},
+    )
+
+    resp_dict = resp.to_dict()
+    parsed = get_tool_call_from_response(resp_dict, provider="gemini")
+
+    if not parsed:
+        return {"paths": paths_metadata, "style": "field-ops", "audience": "field"}
+
+    tool_name, tool_args = parsed
+    if tool_name != "summarize_paths" or not isinstance(tool_args, dict):
+        return {"paths": paths_metadata, "style": "field-ops", "audience": "field"}
+
+    return {
+        "paths": tool_args.get("paths", paths_metadata),
+        "style": tool_args.get("style", "field-ops"),
+        "audience": tool_args.get("audience", "field"),
+    }
+
+# Produce concise field-ops summaries per path using MCP-chosen style/audience (returns list[str]).
+def summarize_multiple_paths_with_llm(latlon_paths):
+    meta = []
     for i, path_data in enumerate(latlon_paths):
         path_data["path_id"] = i + 1
-        metadata = summarize_path_metadata(path_data)
-        summaries.append(metadata)
+        meta.append(summarize_path_metadata(path_data))
 
-    prompt = f"""  
-    You are a Search and Rescue (SAR) path analysis assistant.
+    params = _choose_summary_params_via_mcp(meta)
+    style = params["style"]
+    audience = params["audience"]
+    paths_for_summary = params["paths"]
 
-    Below is structured data representing multiple potential SAR paths. Your job is to review this metadata and generate a concise summary **for each path**, returned as a numbered list in plain text.
+    prompt = f"""You are a Search and Rescue (SAR) path analysis assistant.
 
-    Each item in the list should describe one path and include:
-    - POI name and type
-    - Path distance and estimated time
-    - Elevation gain and loss
-    - Notable road or trail names (if any)
-    - Terrain and surface conditions (surface type, highway type, slope)
-    - Access limitations (e.g., private or restricted roads)
-    - A difficulty rating from 1 (very easy) to 10 (very difficult), with a brief justification
-    - A 2–3 sentence recommendation for SAR responders about suitability, risk, or priority
-    - Whether the path seems likely for a missing person (based on slope, accessibility, etc.)
+Audience: {audience}
+Style preset: {style}
 
-    Format your output as:
-    1. <summary for Path 1>
-    2. <summary for Path 2>
-    ...
+Using the path metadata below, write a short field-ops description for EACH path:
+- Start with: POI: <name> (<type>). If missing, write POI: [Unnamed] (unknown).
+- Describe the likely route in natural language, citing proper nouns (roads, trails, landmarks) where helpful.
+- Difficulty: <1–10> — add a brief qualitative reason (no raw numbers).
+- SAR Recommendation: concise operational guidance (tactics, access/permission checks, hazards, team/equipment, or priority).
 
-    Paths:
-    {json.dumps(summaries, indent=2)}
-    """
+Rules: Do NOT restate numeric metrics (distance, time, elevation, slope). Avoid raw tag dumps; use plain English.
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+Format your output as:
+1. <summary for Path 1>
+2. <summary for Path 2>
+...
+
+Paths:
+{json.dumps(paths_for_summary, indent=2)}
+"""
     response = model.generate_content(prompt)
 
-    # Split the response on numbered lines (e.g., "1. ", "2. ", etc.)
-    import re
-    split_summaries = re.split(r'\n\d+\.\s+', response.text.strip())
-
-    # Remove empty entries and clean up
+    text = (getattr(response, "text", None) or "").strip()
+    split_summaries = re.split(r"\n\d+\.\s+", text)
     return [s.strip() for s in split_summaries if s.strip()]
 
-
+# Convert path metadata + LLM summaries into Redis-ready dict(s): {poi, summary, metrics, features, path_latlon}.
 def prepare_path_for_redis(path_data, llm_summary):
     def collect_unique(k, items):
         return sorted(set(str(i[k]) for i in items if i.get(k) is not None))
@@ -158,7 +212,6 @@ def prepare_path_for_redis(path_data, llm_summary):
             ]
         }
 
-    # Handle both single and list inputs
     if isinstance(path_data, list) and isinstance(llm_summary, list):
         if len(path_data) != len(llm_summary):
             raise ValueError("Length of path_data and llm_summary must match")

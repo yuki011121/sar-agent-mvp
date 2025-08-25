@@ -52,9 +52,8 @@ def add_slope(G, slope_array, transform):
 # Add Tobler's hiking time estimate (in minutes) to each edge based on slope and length
 def add_tobler_time(G):
     for u, v, k, data in G.edges(keys=True, data=True):
-        slope = data.get("grade", 0.0)  # or use slope_deg if that's more accurate
+        slope = data.get("grade", 0.0)  
         length_m = data.get("length", 0)
-        # Tobler's hiking speed in m/min
         speed = 6 * np.exp(-3.5 * abs(slope + 0.05)) * 1000 / 60
         time_min = length_m / speed if speed > 0 else 9999
         data["time_min"] = time_min
@@ -66,23 +65,15 @@ def add_custom_edge_costs(G):
         length = data.get("length", 1.0)
         slope = data.get("slope_deg", 0.0)
         grade = data.get("grade_abs", 0.0)
-
-        # Sanitize slope
-        if not isinstance(slope, (int, float)) or slope != slope:  # slope != slope is NaN check
+        if not isinstance(slope, (int, float)) or slope != slope: 
             slope = 0.0
         else:
             slope = abs(slope)
-
-        # Sanitize grade
         if not isinstance(grade, (int, float)) or grade != grade:
             grade = 0.0
-
-        # Compute cost safely
         cost = length * (1 + 0.1 * grade + 0.05 * slope)
-        cost = max(0.001, cost)  # Clamp to avoid zero or negative costs
-
+        cost = max(0.001, cost) 
         data["cost"] = float(cost)
-
     return G
 
 # Query SAR-relevant POIs and attach them to the nearest graph nodes with metadata
@@ -131,6 +122,7 @@ def add_pois_to_graph(G, crs, bounds):
 
     return G
 
+# Edge data for (u,v) with minimum `weight` (default "cost").
 def get_edge_with_min_weight(G, u, v, weight="cost"):
     best_k = None
     best_val = float("inf")
@@ -141,20 +133,19 @@ def get_edge_with_min_weight(G, u, v, weight="cost"):
             best_k = k
     return G[u][v][best_k]
 
+# Plot DEM + OSM graph; mark POIs; optionally overlay paths.
 def visualize_graph_with_array(
     G,
     raster_array,
     transform,
     figsize=(10, 8),
     title=None,
-    paths=None  # Optional: list of (poi_node, path, cost)
+    paths=None  
 ):
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Plot DEM raster
     show(raster_array, transform=transform, ax=ax, cmap='terrain')
 
-    # Plot the base graph
     ox.plot_graph(
         G,
         ax=ax,
@@ -167,13 +158,11 @@ def visualize_graph_with_array(
         close=False
     )
 
-    # Plot POIs in red
     poi_nodes = [n for n, d in G.nodes(data=True) if d.get('is_poi')]
     x = [G.nodes[n]['x'] for n in poi_nodes]
     y = [G.nodes[n]['y'] for n in poi_nodes]
     ax.scatter(x, y, c='red', s=5, label='POI Nodes', zorder=2)
 
-    # Plot paths if provided
     if paths:
         for i, (poi_node, path, edge_list, cost) in enumerate(paths):
             for u, v, k, edge in edge_list:
@@ -184,7 +173,6 @@ def visualize_graph_with_array(
                     ys = [G.nodes[u]['y'], G.nodes[v]['y']]
                 ax.plot(xs, ys, color='orange', linewidth=1.5, zorder=1)
 
-            # Mark the start node of the path
             start_node = path[0]
             ax.scatter(
                 G.nodes[start_node]['x'],
@@ -195,7 +183,6 @@ def visualize_graph_with_array(
                 zorder=4
             )
 
-            # Label the endpoint POI
             raw_name = G.nodes[poi_node].get('poi_name')
             poi_type = G.nodes[poi_node].get('poi_type', f'POI {i+1}')
             poi_name = raw_name if raw_name and raw_name != "[Unnamed]" else poi_type
@@ -215,7 +202,7 @@ def visualize_graph_with_array(
     ax.legend()
     plt.show()
 
-
+# Build per-path metadata: POI, cost, WGS84 nodes, and edges.
 def extract_paths_metadata(G, path_tuples, crs):
     transformer = Transformer.from_crs(crs.to_string(), "EPSG:4326", always_xy=True)
     results = []
