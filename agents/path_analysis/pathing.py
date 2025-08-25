@@ -12,16 +12,14 @@ def bounds_to_latlon_bounds(bounds, dem_crs):
     east, north = transformer.transform(bounds.right, bounds.top)
     return north, south, east, west
 
+# Nearest graph node to (lon, lat) in given CRS (via OSMnx).
 def get_nearest_node_from_latlon(G, lon, lat, crs):
-
-    # Create a GeoSeries and project it
     point = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs)
     x, y = point.geometry.iloc[0].x, point.geometry.iloc[0].y
-
-    # Find nearest node in projected graph
     nearest_node = ox.distance.nearest_nodes(G, X=x, Y=y)
     return nearest_node
 
+# Computes shortest paths (by `weight`) from (lon, lat) to all POI nodes
 def plan_paths_to_all_pois_from_latlon_with_edges(G, lon, lat, crs, weight="cost"):
     source_node = get_nearest_node_from_latlon(G, lon, lat, crs)
     poi_nodes = [n for n, d in G.nodes(data=True) if d.get("is_poi")]
