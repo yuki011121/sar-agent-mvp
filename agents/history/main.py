@@ -19,6 +19,7 @@ from shared.redis_bus import RedisBus
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+ISRID_PATH = os.getenv("ISRID_PATH", "isrid2searches4calpoly_output.csv")
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
@@ -61,7 +62,7 @@ def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
        'Subject.Activity', 'Sex', 'Subject.Status']
     for col in columns:
         df[col] = df[col].str.lower()
-    df.to_csv('agents/history/data/isrid2searches4calpoly_output.csv')
+    df.to_csv(ISRID_PATH)
 
 
 def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict) -> pd.DataFrame:
@@ -186,10 +187,16 @@ def main():
         return 
 
 
+    try:
+        logging.info("Reading Isirid Dataset")
+        #key is the input name from redis json and value is column name in the isrid csv
+        isrid = pd.read_csv(ISRID_PATH, index_col=0)
+    except FileNotFoundError as e:
+        logging.critical(f"Couldn't find CSV dataset file: {e}")
+        return
+    except Exception as e:
+        logging.critical(f"Error reading CSV file: {e}")
 
-    logging.info("Reading Isirid Dataset")
-    #key is the input name from redis json and value is column name in the isrid csv
-    isrid = pd.read_csv('agents/history/data/isrid2searches4calpoly_output.csv', index_col=0)
     concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
     vectorized_rows = vectorizer.fit_transform(concatenated_rows)
     logging.info("Start redis channel listening loop")
