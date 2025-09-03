@@ -18,3 +18,5 @@ venv/
 # Environment variables
 .env
 *.env
+
+agents/history/data
