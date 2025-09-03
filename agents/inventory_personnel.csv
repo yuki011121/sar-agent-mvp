@@ -1,0 +1,11 @@
+team_id,skills,qty_available,notes
+T001,medic,2,One team on-call only at night
+T002,"search,rescue",3,All members trained in K9 handling
+T003,"translator,logistics",1,Speaks Spanish and Tagalog
+T004,"medic,search",0,Team deployed to fire zone
+T005,"logistics,drone_ops",5,Available for tech support and coordination
+T006,"rescue,heavy_equipment",1,Requires transport vehicle (e.g. truck)
+T007,search,3,Experienced in wilderness search
+T008,"medic,rescue",2,Trained in trauma response
+T009,"communications,logistics",4,Familiar with satellite radios
+T010,"water_rescue,rescue",1,Requires boat (not in inventory)
