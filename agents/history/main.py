@@ -51,25 +51,6 @@ except redis.exceptions.ConnectionError as e:
     logging.error(f"Could not connect to Redis: {e}")
     exit(1)
 
-# def redis_input():
-#     global last_msg_ID
-#     ID_INDEX = 0
-#     MSG_DATA_INDEX = 1
-#     logging.info("Blocking until a new message is found")
-#     #reads the oldest message (switch to $ for newest), limit 1 message to fetch, block forever until
-#     #a message is received 
-#     input_received = redis_client.xread({STREAM_NAME_IN: ('$' if last_msg_ID is None else last_msg_ID)}, count=1, block=0)
-#     #input_received is an array arrays that contain a key (stream name)
-#     # and an array of tuples (ID, field-value pairs)
-#     stream_data = input_received[0]
-#     msgs_read = stream_data[1]
-#     #there is only one msg that is read
-#     msg = msgs_read[0]
-#     last_msg_ID = msg[ID_INDEX]
-#     msg_data = msg[MSG_DATA_INDEX]
-#     logging.info("Read message and parsed correctly")
-#     return msg_data
-
 def redis_output(standardized_output):
     redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
     logging.info(f"Summary + Action payload added to {STREAM_NAME_OUT} stream")
@@ -80,7 +61,7 @@ def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
        'Subject.Activity', 'Sex', 'Subject.Status']
     for col in columns:
         df[col] = df[col].str.lower()
-    df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
+    df.to_csv('agents/history/data/isrid2searches4calpoly_output.csv')
 
 
 def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict) -> pd.DataFrame:
@@ -208,16 +189,12 @@ def main():
 
     logging.info("Reading Isirid Dataset")
     #key is the input name from redis json and value is column name in the isrid csv
-    isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv', index_col=0)
+    isrid = pd.read_csv('agents/history/data/isrid2searches4calpoly_output.csv', index_col=0)
     concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
     vectorized_rows = vectorizer.fit_transform(concatenated_rows)
     logging.info("Start redis channel listening loop")
 
     for message_read in subGen:
-        # # message_read = redis_input()
-        # print("got here")
-        # print(message_read.payload)
-        # # continue
         matches = find_match(isrid, vectorized_rows, message_read.payload)
         try:
             summary, actions = prompt_llm(matches, message_read.payload)
@@ -235,7 +212,8 @@ def main():
             )
 
             bus.publish(message_to_publish)
-            print(message_to_publish)
+            logging.info(f"Successfully published payload to redis stream {STREAM_NAME_OUT}")
+            
         except Exception as e:
             logging.error(f"Error querying llm or publishing to redis: {e}")
         
