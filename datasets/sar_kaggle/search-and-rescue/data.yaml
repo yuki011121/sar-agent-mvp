@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['human']
+
+roboflow:
+  workspace: datasets-pdabr
+  project: sard-8xjhy
+  version: 17
+  license: Private
+  url: https://universe.roboflow.com/datasets-pdabr/sard-8xjhy/dataset/17
