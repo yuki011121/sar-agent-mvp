@@ -44,3 +44,8 @@ photo_analysis_agent.log
 # Temporary files
 *.tmp
 *.temp
+# Large DEM files
+agents/path_analysis/data/*.tif
+
+#OSMnx cache
+cache/
