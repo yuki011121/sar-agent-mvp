@@ -19,6 +19,9 @@ venv/
 .env
 *.env
 
+#Other
+my_instructions.txt
+
 # Dataset and image files
 datasets/
 input_images/
