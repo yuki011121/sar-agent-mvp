@@ -22,6 +22,8 @@ openai = "^1.95.1"
 scikit-learn = "^1.7.1"
 google-generativeai = "^0.8.5"
 pydantic = ">=2.6.0"
+osmnx = "^2.0.5"
+scipy = "^1.11"
 
 [tool.poetry.dev-dependencies]
 
