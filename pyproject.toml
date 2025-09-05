@@ -13,6 +13,7 @@ pyautogen = "^0.9"
 pandas = "^2.3.1"
 openai = "^1.95.1"
 scikit-learn = "^1.7.1"
+agentic-mvp-shared = {git = "https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git"}
 
 [tool.poetry.dev-dependencies]
 

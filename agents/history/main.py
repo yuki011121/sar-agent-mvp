@@ -12,9 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 #for pub/sub for redis
-from shared.a2a_envelope import wrap_envelope
-from shared.redis_bus import RedisBus
-
+from shared import wrap_envelope, RedisBus
 #using tools, mcp
 
 load_dotenv()
