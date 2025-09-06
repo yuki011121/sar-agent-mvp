@@ -1,6 +1,8 @@
 ## DockerFile
 The docker file assumes that the build context is the SAR-AGENT-MVP directory
 
+The pyproject.toml imports the <i>shared files</i> from the [repo](https://github.com/RandomCyberCoder/Agentic-MVP-Shared) as the package <i>shared</i>.
+
 ## History Agent
 The agent will take in a query incident and find the top three most similar incidents. The top-k similarities are found using cosine similarity and TF-IDF. The most similar incidents are passed to an llm to generate a summary of them. Next the summaries and query incident are passed back to the LLM to generate actions that can lead to finding the missing person in the query incident.
 
@@ -14,7 +16,7 @@ The agent requires the cleaned ISRID data set in a CSV format to recall past inc
     - Needed for OpenAI api
 - REDIS_URL
     - URL to connect to Redis
-    - URL Schemes supported "redis://", "rediss://", "unix://". More info [here](redis.Redis.from_url)
+    - URL Schemes supported "redis://", "rediss://", "unix://". More info [here](https://redis.readthedocs.io/en/latest/connections.html)
     - Optional
         - If not included this will default to "redis://localhost:6379"
 - ISRID_PATH
