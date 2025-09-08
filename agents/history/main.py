@@ -10,6 +10,14 @@ from datetime import datetime, timezone
 # import required module
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ApiException
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+from sentence_transformers import SentenceTransformer
+import codecs
+import ast
+from typing import List
+from qdrant_client.http.models.models import ScoredPoint
 
 #for pub/sub for redis
 from shared import wrap_envelope, RedisBus
@@ -18,14 +26,18 @@ from shared import wrap_envelope, RedisBus
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 ISRID_PATH = os.getenv("ISRID_PATH", "isrid2searches4calpoly_output.csv")
+#REST api port for qdrant
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
-AGENT_VERSION = "1.1"
+AGENT_VERSION = "2.0"
 OPENAI_KEY = os.getenv("OPENAI_KEY", None)
 ISRID_COLUMNS = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category', 'Subject.Activity', 'Age',
                            'Sex', 'Subject.Status']
 TOP_K_MATCHES = 3
+QDRANT_TOP_K = 2
 last_msg_ID = None
 vectorizer = TfidfVectorizer()
 # logger = logging.getLogger(__name__)
@@ -40,6 +52,10 @@ if OPENAI_KEY is None:
     logging.info("Couldn't find a api key for OPENAI")
     exit(1)
 
+if QDRANT_COLLECTION is None:
+    logging.info("Couldn't find a collection name for QDRANT")
+    exit(1)
+
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
 try:
@@ -48,6 +64,23 @@ try:
     logging.info(f"Successfully connected to Redis at {REDIS_URL}")
 except redis.exceptions.ConnectionError as e:
     logging.error(f"Could not connect to Redis: {e}")
+    exit(1)
+
+try:
+    client_Qdrant = QdrantClient(url=QDRANT_URL)
+    logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
+except ApiException as e:
+    logging.error(f"Exception when calling QdrantClient: {e}")
+    exit(1)
+except Exception as e:
+    logging.error(f"Could not connect to Qdrant: {e}")
+    exit(1)
+
+try:
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    logging.info("Successfully loaded sentence transformer model")
+except Exception as e:
+    logging.error(f"Error loading sentence transformer model: {e}")
     exit(1)
 
 def redis_output(standardized_output):
@@ -75,6 +108,45 @@ def verify_llm_response(response):
         code = getattr(response.error, "code", "unknown")
         message = getattr(response.error, "message", "No message provided")
         raise Exception(f"Model error\nCode: {code}\nMessage: {message}")
+
+
+def clean_llm_output(text: str) -> str:
+    """
+    Cleans LLM output text by decoding escape sequences and UTF-8 byte strings.
+    Useful before creating embeddings.
+    """
+    try:
+        # First pass: decode escape sequences (e.g. \\n -> \n)
+        text = ast.literal_eval(f'"{text}"')
+    except Exception:
+        pass  # Skip if it's already a properly escaped string
+
+    try:
+        # Second pass: decode UTF-8 bytes (e.g. \xe2\x80\x94 -> —)
+        text = text.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
+    except Exception:
+        pass  # Skip if not needed
+
+    text = text.replace("**", "")
+    return text
+
+def RAG_query(query: str) -> List[ScoredPoint]:
+    logging.info("Querying Qdrant for relevant SAR information")
+    try:
+        query_vector = model.encode(query).tolist()
+        search_result = client_Qdrant.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=query_vector,
+            limit=QDRANT_TOP_K,
+            with_payload=True
+        ).points
+        return search_result
+    except ApiException as e:
+        logging.error(f"Exception when calling QdrantClient: {e}")
+        return []
+    except Exception as e:
+        logging.error(f"Error querying Qdrant: {e}")
+        return []
 
 def prompt_llm(matches: pd.DataFrame, query: dict):
     logging.info("Querying LLM")
@@ -130,7 +202,9 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
 
     verify_llm_response(response)
 
-    summary = response.output[0].content[0].text
+    summary = clean_llm_output(response.output[0].content[0].text)
+
+    additional_context = RAG_query(summary + "\n Where to locate a missing person based on the summary above.")
 
     #query llm for actions to take based on summaries generated
     
@@ -150,6 +224,17 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
         "- Tailor each tip to the specific query details (terrain, subject profile, etc.).\n"
         "- Include reasoning for each recommendation.\n"
         "- Be specific and actionable.\n"
+
+        "Additional Context:\n"
+        "- This is information that may be useful to consider when generating recommendations\n"
+        "- the format of this is a list of dictionaries\n"
+        "- Each dictionary is in the format {'provenance': {'source': '', 'author': ''}, 'content': 'relevant information'}\n"
+        "- The provenance field gives attribution for the content field. Use the author property to give attribution.\n"
+        f"{additional_context}\n"
+
+        "Additional Output Guidelines:\n"
+        "- include attribution at the end of the tips section as mentioned in the additional context\n"
+
     )
 
     response = client.responses.create(
@@ -164,14 +249,15 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
                 "content": user_instructions
             }
         ],
-        max_output_tokens = 450,
+        max_output_tokens = 520,
         previous_response_id = response.id
     )
 
     verify_llm_response(response)
-    
-    actions = response.output[0].content[0].text
-    
+
+    actions = clean_llm_output(response.output[0].content[0].text)
+
+    print(f"Summary: {summary} \n\n\n Actions: {actions}")
     return summary, actions
 
 def main():
