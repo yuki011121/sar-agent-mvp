@@ -1,21 +1,293 @@
 version: "3.9"
 
+networks:
+  sar-network:
+    driver: bridge
+
 services:
+  # =============================================================================
+  # Infrastructure Services
+  # =============================================================================
+  
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    container_name: sar-redis
+    ports: 
+      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - sar-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   minio:
     image: minio/minio
+    container_name: sar-minio
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
-    ports: ["9000:9000", "9001:9001"]
+    ports: 
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - sar-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # =============================================================================
+  # Core SAR Agent Services
+  # =============================================================================
+
+  weather-agent:
+    build: .
+    container_name: sar-weather-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - AGENT_NAME=weather-agent
+      - AGENT_VERSION=1.1
+      - LATITUDE=${LATITUDE:-35.2828}
+      - LONGITUDE=${LONGITUDE:--120.6596}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-3600}
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python agents/weather/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: unless-stopped
+
+  health-agent:
+    build: .
+    container_name: sar-health-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-60}
+      - GEMINI_DEFAULT_MODEL=${GEMINI_DEFAULT_MODEL:-gemini-1.5-flash}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python agents/health/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: unless-stopped
+
+  photo-analysis-agent:
+    build: .
+    container_name: sar-photo-analysis-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - IMAGE_INPUT_DIR=${IMAGE_INPUT_DIR:-input_images}
+      - REDIS_OUTPUT_STREAM=${REDIS_OUTPUT_STREAM:-photo.analysis.raw}
+      - YOLO_MODEL_PATH=${YOLO_MODEL_PATH:-yolov8m.pt}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-10}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - RETRY_DELAY=${RETRY_DELAY:-5}
+    volumes:
+      - ./:/workspace
+      - ./input_images:/workspace/input_images
+      - yolo_models:/workspace/models
+    working_dir: /workspace
+    command: python agents/photo_analysis/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: unless-stopped
+
+  interview-agent:
+    build: .
+    container_name: sar-interview-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./:/workspace
+      - ./data:/workspace/data
+    working_dir: /workspace
+    command: python agents/interview/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: "no"  # 运行一次即可
+
+  logistics-agent:
+    build: .
+    container_name: sar-logistics-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-1800}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python agents/logistics/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: unless-stopped
+
+  path-analysis-agent:
+    build: .
+    container_name: sar-path-analysis-agent
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_KEY=${API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - AGENT_NAME=${AGENT_NAME:-path-analysis-agent}
+      - AGENT_VERSION=${AGENT_VERSION:-1.1}
+      - DEM_PATH=${DEM_PATH:-agents/path_analysis/data/slo_dem.tif}
+      - START_LON=${START_LON:--120.6605}
+      - START_LAT=${START_LAT:-35.2980}
+      - TOP_K=${TOP_K:-3}
+      - DO_VISUALIZE=${DO_VISUALIZE:-true}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python agents/path_analysis/main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    restart: "no"  # 运行一次即可
+
+  # =============================================================================
+  # Development and Management Services
+  # =============================================================================
 
   dev:
     build: .
+    container_name: sar-dev
     volumes:
       - ./:/workspace
+    working_dir: /workspace
     command: sleep infinity
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    depends_on:
+      - redis
+      - minio
+    networks:
+      - sar-network
+
+  # Redis管理界面 (可选)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: sar-redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - sar-network
+    profiles:
+      - tools
+
+  # 系统监控 (可选)
+  agent-monitor:
+    build: .
+    container_name: sar-agent-monitor
+    environment:
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python -c "
+      import redis, time, json
+      r = redis.Redis(host='redis', port=6379, decode_responses=True)
+      while True:
+          streams = r.keys('*.raw')
+          print(f'Active streams: {streams}')
+          for stream in streams:
+              try:
+                  length = r.xlen(stream)
+                  print(f'  {stream}: {length} messages')
+              except:
+                  pass
+          time.sleep(30)
+      "
+    depends_on:
+      - redis
+    networks:
+      - sar-network
+    profiles:
+      - monitoring
+
+  # Web监控界面
+  web-monitor:
+    build: .
+    container_name: sar-web-monitor
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MONITOR_PORT=5000
+      - MONITOR_HOST=0.0.0.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python web_monitor.py
+    depends_on:
+      - redis
+    networks:
+      - sar-network
+    profiles:
+      - monitoring
+
+  # Agent协调器
+  orchestrator:
+    build: .
+    container_name: sar-orchestrator
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python agent_orchestrator.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sar-network
+    profiles:
+      - orchestrator
+
+volumes:
+  redis_data:
+  minio_data:
+  yolo_models:
