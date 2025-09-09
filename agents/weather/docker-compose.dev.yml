@@ -1,0 +1,64 @@
+# Weather Agent 独立开发环境
+version: "3.9"
+
+networks:
+  weather-dev:
+    driver: bridge
+
+services:
+  # Weather Agent专用Redis
+  redis-weather:
+    image: redis:7-alpine
+    container_name: weather-redis-dev
+    ports: 
+      - "6381:6379"
+    command: ["redis-server", "--appendonly", "no"]
+    networks:
+      - weather-dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Weather Agent
+  weather-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: weather-agent-dev
+    environment:
+      - REDIS_URL=redis://redis-weather:6379
+      - LATITUDE=${LATITUDE:-35.2828}
+      - LONGITUDE=${LONGITUDE:--120.6596}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-60}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./:/app/agents/weather
+      - ../../shared:/app/shared
+    depends_on:
+      redis-weather:
+        condition: service_healthy
+    networks:
+      - weather-dev
+    restart: unless-stopped
+
+  # 开发工具容器
+  weather-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: weather-dev-tools
+    environment:
+      - REDIS_URL=redis://redis-weather:6379
+    volumes:
+      - ./:/app/agents/weather
+      - ../../shared:/app/shared
+    command: sleep infinity
+    depends_on:
+      - redis-weather
+    networks:
+      - weather-dev
+
+volumes:
+  weather_data:
