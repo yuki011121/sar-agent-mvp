@@ -1,0 +1,46 @@
+version: "3.9"
+
+networks:
+  sar-test:
+    driver: bridge
+
+services:
+  # 测试用的最小Redis服务
+  redis-test:
+    image: redis:7-alpine
+    container_name: sar-redis-test
+    ports: 
+      - "6380:6379"  # 使用不同端口避免冲突
+    command: ["redis-server", "--appendonly", "no"]  # 测试时不需要持久化
+    networks:
+      - sar-test
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 开发/测试容器
+  test-env:
+    build: .
+    container_name: sar-test-env
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: sleep infinity
+    environment:
+      - REDIS_URL=redis://redis-test:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - API_KEY=${API_KEY}
+      - IMAGE_INPUT_DIR=input_images
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    networks:
+      - sar-test
+
+volumes:
+  test_data:
