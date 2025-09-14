@@ -8,8 +8,6 @@ import openai
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 # import required module
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ApiException
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -18,6 +16,7 @@ import codecs
 import ast
 from typing import List
 from qdrant_client.http.models.models import ScoredPoint
+from joblib import load
 
 #for pub/sub for redis
 from shared import wrap_envelope, RedisBus
@@ -25,21 +24,28 @@ from shared import wrap_envelope, RedisBus
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-ISRID_PATH = os.getenv("ISRID_PATH", "isrid2searches4calpoly_output.csv")
 #REST api port for qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
-AGENT_VERSION = "2.0"
+AGENT_VERSION = "3.0.0"
 OPENAI_KEY = os.getenv("OPENAI_KEY", None)
-ISRID_COLUMNS = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category', 'Subject.Activity', 'Age',
-                           'Sex', 'Subject.Status']
 TOP_K_MATCHES = 3
 QDRANT_TOP_K = 2
-last_msg_ID = None
-vectorizer = TfidfVectorizer()
+QDRANT_ISRID_COLLECTION = "ISRID_collection"
+ISRID_VECTORIZER_PATH = "agents/history/models/isrid_tfidf_vectorizer.joblib"
+[
+  'Data.Source',
+  'Incident.Outcome',
+  'Terrain',
+  'Subject.Category',
+  'Subject.Activity',
+  'Age',
+  'Sex',
+  'Subject.Status'
+]
 # logger = logging.getLogger(__name__)
 
 logging.basicConfig(
@@ -63,45 +69,46 @@ try:
     redis_client.ping()
     logging.info(f"Successfully connected to Redis at {REDIS_URL}")
 except redis.exceptions.ConnectionError as e:
-    logging.error(f"Could not connect to Redis: {e}")
+    logging.critical(f"Could not connect to Redis: {e}")
     exit(1)
 
 try:
     client_Qdrant = QdrantClient(url=QDRANT_URL)
     logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
 except ApiException as e:
-    logging.error(f"Exception when calling QdrantClient: {e}")
+    logging.critical(f"Exception when calling QdrantClient: {e}")
     exit(1)
 except Exception as e:
-    logging.error(f"Could not connect to Qdrant: {e}")
+    logging.critical(f"Could not connect to Qdrant: {e}")
     exit(1)
 
 try:
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
     logging.info("Successfully loaded sentence transformer model")
 except Exception as e:
-    logging.error(f"Error loading sentence transformer model: {e}")
+    logging.critical(f"Error loading sentence transformer model: {e}")
     exit(1)
 
-def redis_output(standardized_output):
-    redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
-    logging.info(f"Summary + Action payload added to {STREAM_NAME_OUT} stream")
-
-def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
-    logging.info("Normalizing Data")
-    columns = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category',
-       'Subject.Activity', 'Sex', 'Subject.Status']
-    for col in columns:
-        df[col] = df[col].str.lower()
-    df.to_csv(ISRID_PATH)
+try:
+    ISRID_VECTORIZER = load(ISRID_VECTORIZER_PATH)
+    logging.info("Successfully loaded ISRID vectorizer")
+except Exception as e:
+    logging.critical(f"Error loading ISRID vectorizer: {e}. Fix by running isrid_parsing.py")
+    logging.critical(f"Make sure the path {ISRID_VECTORIZER_PATH} is correct" +  
+                     " or run agents/history/isrid_parsing.py to create it.")
+    exit(1)
 
 
-def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict) -> pd.DataFrame:
+def find_match(queryJSON: dict) -> list[dict]:
+    # Convert queryJSON to a string and then to a vector
     query_as_string = " ".join(queryJSON.values()).lower()
-    query_vectorized = vectorizer.transform([query_as_string])
-    similarities = cosine_similarity(query_vectorized, vectorized_rows)[0]
-    max_indexes = np.argsort(similarities)[::-1][:TOP_K_MATCHES]
-    return data.iloc[max_indexes]
+    query_vector = ISRID_VECTORIZER.transform([query_as_string]).toarray()[0]
+    
+    top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
+    formatted_matches = [match.payload["metadata"] for match in top_matches]
+    
+    return formatted_matches
+
 
 def verify_llm_response(response):
     if hasattr(response, "error") and response.error is not None:
@@ -130,25 +137,27 @@ def clean_llm_output(text: str) -> str:
     text = text.replace("**", "")
     return text
 
-def RAG_query(query: str) -> List[ScoredPoint]:
-    logging.info("Querying Qdrant for relevant SAR information")
+'''
+    TODO: generalize this
+'''
+def qdrant_query(query_vector: List[float], collection_name: str, results_limit: int) -> List[ScoredPoint]:
+    logging.info("Querying Qdrant")
     try:
-        query_vector = model.encode(query).tolist()
         search_result = client_Qdrant.query_points(
-            collection_name=QDRANT_COLLECTION,
+            collection_name=collection_name,
             query=query_vector,
-            limit=QDRANT_TOP_K,
+            limit=results_limit,
             with_payload=True
         ).points
         return search_result
     except ApiException as e:
-        logging.error(f"Exception when calling QdrantClient: {e}")
-        return []
+        logging.error(f"Exception when calling QdrantClient for collection {collection_name}: {e}")
+        return [] 
     except Exception as e:
         logging.error(f"Error querying Qdrant: {e}")
         return []
 
-def prompt_llm(matches: pd.DataFrame, query: dict):
+def prompt_llm(matches: List[dict], query: dict):
     logging.info("Querying LLM")
     NUMBER_OF_TIPS = 3
 
@@ -163,19 +172,18 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
         "Task: Summarize the following search and rescue incidents and explain how they relate to the provided query.\n\n"
 
         "Input Format:\n"
-        "- The matching incidents are provided in JSON format, converted from a pandas DataFrame.\n"
+        "- The matching incidents are a list of python dictionaries converted to JSON. Each dictionary is a separate SAR incident\n"
+        "- Each key in the incident dictionary is a relevant piece of information about the incident.\n\n"
+        "- Note; that some key-value pairs may be abbreviated (e.g., data source)\n"
         "- The query is a Python dictionary converted to a string.\n"
-        "- Each key in the incident JSON is a column name, and its value is a dictionary mapping row indices to cell values.\n\n"
 
-        f"Example:\n"
-        '{\n  "location": {"0": "mountain trail", "1": "riverbank"},\n'
-        '  "outcome": {"0": "found alive", "1": "not found"}\n'
-        '}\n\n'
+        f"Example of an incident dictionary (Note: some columns such as data source might co):\n"
+        "{'Data.Source': 'nz', 'Incident.Outcome': 'search', 'Terrain': 'mountainous', 'Subject.Category': 'dementia', 'Subject.Activity': 'walkaway', 'Age': '67', 'Sex': 'f', 'Subject.Status': 'well'}"
         
         "Note: Some column values (e.g., data source) may be abbreviated.\n\n"
 
         f"Query Used:\n{str(query)}\n\n"
-        f"Matching Incidents:\n{matches.to_json()}\n\n"
+        f"Matching Incidents:\n{str(matches)}\n\n"
 
         "Guidelines:\n"
         "- Provide a clear and concise summary of the incidents.\n"
@@ -204,8 +212,9 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
 
     summary = clean_llm_output(response.output[0].content[0].text)
 
-    additional_context = RAG_query(summary + "\n Where to locate a missing person based on the summary above.")
-
+    qdrant_context_embedding = sentence_transformer.encode(summary + "\n Where to locate a missing person based on the summary above.").tolist()
+    additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
+    additional_context = [context.payload for context in additional_context]
     #query llm for actions to take based on summaries generated
     
     dev_instructions = (
@@ -270,23 +279,13 @@ def main():
         logging.critical(f"Failed to connect to Redis, cannot start agent. Error: {e}")
         return 
 
-
-    try:
-        logging.info("Reading Isirid Dataset")
-        #key is the input name from redis json and value is column name in the isrid csv
-        isrid = pd.read_csv(ISRID_PATH, index_col=0)
-    except FileNotFoundError as e:
-        logging.critical(f"Couldn't find CSV dataset file: {e}")
-        return
-    except Exception as e:
-        logging.critical(f"Error reading CSV file: {e}")
-
-    concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
-    vectorized_rows = vectorizer.fit_transform(concatenated_rows)
     logging.info("Start redis channel listening loop")
 
+    
     for message_read in subGen:
-        matches = find_match(isrid, vectorized_rows, message_read.payload)
+
+        #update this
+        matches = find_match(message_read.payload)
         try:
             summary, actions = prompt_llm(matches, message_read.payload)
 
