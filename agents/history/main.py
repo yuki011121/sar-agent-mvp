@@ -36,17 +36,7 @@ TOP_K_MATCHES = 3
 QDRANT_TOP_K = 2
 QDRANT_ISRID_COLLECTION = "ISRID_collection"
 ISRID_VECTORIZER_PATH = "agents/history/models/isrid_tfidf_vectorizer.joblib"
-[
-  'Data.Source',
-  'Incident.Outcome',
-  'Terrain',
-  'Subject.Category',
-  'Subject.Activity',
-  'Age',
-  'Sex',
-  'Subject.Status'
-]
-# logger = logging.getLogger(__name__)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,9 +127,7 @@ def clean_llm_output(text: str) -> str:
     text = text.replace("**", "")
     return text
 
-'''
-    TODO: generalize this
-'''
+
 def qdrant_query(query_vector: List[float], collection_name: str, results_limit: int) -> List[ScoredPoint]:
     logging.info("Querying Qdrant")
     try:
