@@ -16,6 +16,7 @@ scikit-learn = "^1.7.1"
 agentic-mvp-shared = {git = "https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git"}
 sentence-transformers = "^5.1.0"
 qdrant-client = "^1.15.1"
+joblib = "^1.5.2"
 
 [tool.poetry.dev-dependencies]
 
