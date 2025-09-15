@@ -116,6 +116,7 @@ def find_match(queryJSON: dict) -> list[dict]:
     # Convert queryJSON to a string and then to a vector
     query_filter = queryJSON["filter"] if "filter" in queryJSON else None
     queryJSON.pop('filter', None)
+    queryJSON.pop('additional', None)
     query_as_string = " ".join(queryJSON.values()).lower()
     query_vector = ISRID_VECTORIZER.transform([query_as_string]).toarray()[0]
 
@@ -184,9 +185,12 @@ def qdrant_query(query_vector: List[float], collection_name: str, results_limit:
         logging.error(f"Error querying Qdrant: {e}")
         return []
 
-def prompt_llm(matches: List[dict], query: dict):
+def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
     logging.info("Querying LLM")
     NUMBER_OF_TIPS = 3
+
+    query.pop('filter', None)
+    query.pop('additional', None)
 
     #query llm for a summary of the top-k incident matches
     dev_instructions = (
@@ -239,7 +243,8 @@ def prompt_llm(matches: List[dict], query: dict):
 
     summary = clean_llm_output(response.output[0].content[0].text)
 
-    qdrant_context_embedding = sentence_transformer.encode(summary + "\n Where to locate a missing person based on the summary above.").tolist()
+    qdrant_context_embedding = sentence_transformer.encode(summary + 
+                                                           f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
     additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
     additional_context = [context.payload for context in additional_context]
     #query llm for actions to take based on summaries generated
@@ -259,14 +264,18 @@ def prompt_llm(matches: List[dict], query: dict):
         "Guidelines:\n"
         "- Tailor each tip to the specific query details (terrain, subject profile, etc.).\n"
         "- Include reasoning for each recommendation.\n"
-        "- Be specific and actionable.\n"
+        "- Be specific and actionable.\n\n"
 
-        "Additional Context:\n"
-        "- This is information that may be useful to consider when generating recommendations\n"
+        "Additional search and rescue (SAR) Context:\n"
+        "- This is SAR information that may be useful to consider when generating recommendations\n"
         "- the format of this is a list of dictionaries\n"
         "- Each dictionary is in the format {'provenance': {'source': '', 'author': ''}, 'content': 'relevant information'}\n"
         "- The provenance field gives attribution for the content field. Use the author property to give attribution.\n"
-        f"{additional_context}\n"
+        f"{additional_context}\n\n"
+
+        "Additional Incident Information\n"
+        "- Any information in this section is known additional information about the incident\n"
+        f"- {incident_Info}"
 
         "Additional Output Guidelines:\n"
         "- include attribution at the end of the tips section as mentioned in the additional context\n"
@@ -311,10 +320,15 @@ def main():
     
     for message_read in subGen:
 
+
         #update this
+        
+        additional_info = message_read.payload.pop('additional', None)
+        additional_info = additional_info or ""
+
         matches = find_match(message_read.payload)
         try:
-            summary, actions = prompt_llm(matches, message_read.payload)
+            summary, actions = prompt_llm(matches, message_read.payload, additional_info)
 
             payload = {
                 "summary" : summary,

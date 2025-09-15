@@ -35,7 +35,8 @@ def main():
          'filter': {
              'type': 'location',
              'filter_value': "us-ky"
-         }
+         },
+         'additional': "This person might have dementia and is likes to go to common spaces when wandering"
     }
     message_to_publish = wrap_envelope(
         payload=payload,
