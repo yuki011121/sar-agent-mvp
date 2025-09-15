@@ -37,17 +37,26 @@ def clean_dataset(rows: pd.DataFrame) -> List[str]:
     for _, row in rows.iterrows():
         # Specific cleaning rules based on observed data issues
         row["Incident.Outcome"] = row["Incident.Outcome"].replace("/", " ")
+        
         if "." in str(row["Age"]) and str(row["Age"]).split(".")[1] == "0":
             row["Age"] = str(row["Age"]).split(".")[0]
 
-        cleaned_row = ' '.join(row.astype(str).str.lower().str.strip())
+    #Convert to numeric to allow for searching by age in Qdrant
+    rows["Age"] = pd.to_numeric(rows["Age"], errors="coerce")
+    rows.fillna({"Age": 0}, inplace=True)
+
+    for _, row in rows.iterrows():
+        #removing the ".0" from any float that is actually an integer
+        cleaned_row = ' '.join(row.astype(str).str.lower().str.strip()).replace(".0", "")
         cleaned_rows.append((cleaned_row, row.to_dict()))
+
     return cleaned_rows
 
 
 def format_for_DB(row: List[str]) -> List[dict]:
     formatted_rows = []
     for row_str, row_dict in row:
+        row_dict["Age"] = float(row_dict["Age"])
         formatted_entry = {
             "provenance": {
                 "source": "ISRID Dataset",
