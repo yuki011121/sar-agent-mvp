@@ -30,8 +30,12 @@ def main():
         return
     payload = {
          'outcome': 'search',
-         'terrain': 'urban',
-         'category': 'dementia'
+         'terrain': 'mountainous',
+         'category': 'hiker',
+         'filter': {
+             'type': 'location',
+             'filter_value': "us-ky"
+         }
     }
     message_to_publish = wrap_envelope(
         payload=payload,

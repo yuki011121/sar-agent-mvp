@@ -8,8 +8,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ApiException
 from sentence_transformers import SentenceTransformer
 import ast
-from typing import List
+from typing import List, Optional
 from qdrant_client.http.models.models import ScoredPoint
+from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
 from joblib import load
 #for pub/sub for redis
 from shared import wrap_envelope, RedisBus
@@ -81,12 +82,53 @@ except Exception as e:
     exit(1)
 
 
+def qdrant_ISRID_filter(query_filter: dict) -> List[FieldCondition]:
+    filters = []
+
+    try:
+        query_filter["type"] = query_filter["type"].lower()
+        if query_filter["type"] == "category":
+            filters.append(FieldCondition(key="metadata.Subject_Category"
+                                        , match=MatchValue(value=query_filter["filter_value"])))
+        elif query_filter["type"] == "age":
+            age_target = float(str(query_filter["filter_value"]))
+            #grow delta for age range as age grows. fixed below a 10 years old
+            delta = 1 if age_target < 10 else age_target * 0.1
+            filters.append(FieldCondition(key="metadata.Age"
+                                        , range=Range(
+                                            gt = None,
+                                            gte = age_target - delta,
+                                            lt = None,
+                                            lte = age_target + delta
+                                        )))
+        elif query_filter["type"] == "location":
+            filters.append(FieldCondition(key="metadata.Data_Source"
+                                        , match=MatchValue(value=query_filter["filter_value"])))
+            
+    except Exception as e:
+        logging.error(f"Problem making filter for Qdrant ISRID query. Error: {e}")
+
+
+
+    return filters
+
 def find_match(queryJSON: dict) -> list[dict]:
     # Convert queryJSON to a string and then to a vector
+    query_filter = queryJSON["filter"] if "filter" in queryJSON else None
+    queryJSON.pop('filter', None)
     query_as_string = " ".join(queryJSON.values()).lower()
     query_vector = ISRID_VECTORIZER.transform([query_as_string]).toarray()[0]
+
+    if query_filter:
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K
+                                   , qdrant_ISRID_filter(query_filter))
+        
+        #if we couldn't find any points with the filter then search the entire database
+        if len(top_matches) == 0:
+            top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
+    else:
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
     
-    top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
     formatted_matches = [match.payload["metadata"] for match in top_matches]
     
     return formatted_matches
@@ -120,12 +162,17 @@ def clean_llm_output(text: str) -> str:
     return text
 
 
-def qdrant_query(query_vector: List[float], collection_name: str, results_limit: int) -> List[ScoredPoint]:
+def qdrant_query(query_vector: List[float], collection_name: str, results_limit: int
+                 , filter: Optional[List[FieldCondition]] = None) -> List[ScoredPoint]:
     logging.info("Querying Qdrant")
+    filter = filter or []
     try:
         search_result = client_Qdrant.query_points(
             collection_name=collection_name,
             query=query_vector,
+            query_filter = Filter(
+                must=filter
+            ),
             limit=results_limit,
             with_payload=True
         ).points
