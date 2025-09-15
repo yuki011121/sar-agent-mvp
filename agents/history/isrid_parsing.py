@@ -44,6 +44,8 @@ def clean_dataset(rows: pd.DataFrame) -> List[str]:
     #Convert to numeric to allow for searching by age in Qdrant
     rows["Age"] = pd.to_numeric(rows["Age"], errors="coerce")
     rows.fillna({"Age": 0}, inplace=True)
+    rows.columns = [col.replace('.', '_') for col in rows.columns]
+
 
     for _, row in rows.iterrows():
         #removing the ".0" from any float that is actually an integer
