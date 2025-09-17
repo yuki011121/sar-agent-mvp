@@ -121,14 +121,14 @@ def find_match(queryJSON: dict) -> list[dict]:
     query_vector = ISRID_VECTORIZER.transform([query_as_string]).toarray()[0]
 
     if query_filter:
-        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES
                                    , qdrant_ISRID_filter(query_filter))
         
         #if we couldn't find any points with the filter then search the entire database
         if len(top_matches) == 0:
-            top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
+            top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES)
     else:
-        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, QDRANT_TOP_K)
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES)
     
     formatted_matches = [match.payload["metadata"] for match in top_matches]
     
