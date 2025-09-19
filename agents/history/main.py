@@ -48,14 +48,6 @@ if QDRANT_COLLECTION is None:
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
 try:
-    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
-    logging.info(f"Successfully connected to Redis at {REDIS_URL}")
-except redis.exceptions.ConnectionError as e:
-    logging.critical(f"Could not connect to Redis: {e}")
-    exit(1)
-
-try:
     client_Qdrant = QdrantClient(url=QDRANT_URL)
     logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
 except ApiException as e:
