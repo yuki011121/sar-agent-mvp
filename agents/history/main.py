@@ -294,7 +294,7 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
 
     actions = clean_llm_output(response.output[0].content[0].text)
 
-    print(f"Summary: {summary} \n\n\n Actions: {actions}")
+    # print(f"Summary: {summary} \n\n\n Actions: {actions}")
     return summary, actions
 
 def main():
@@ -312,9 +312,6 @@ def main():
     
     for message_read in subGen:
 
-
-        #update this
-        
         additional_info = message_read.payload.pop('additional', None)
         additional_info = additional_info or ""
 
