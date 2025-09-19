@@ -8,14 +8,16 @@ import sys
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ApiException
 from deepeval.metrics.g_eval import Rubric
+from tenacity import RetryError
+from openai import RateLimitError, APIError
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from main import find_match, qdrant_query, qdrant_ISRID_filter
+from main import qdrant_query
 
 
 load_dotenv()
-#ephmeral?????
 OPENAI_TEST_KEY = os.getenv("OPENAI_TEST_KEY", None)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 #REST api port for qdrant
@@ -27,7 +29,7 @@ STREAM_NAME_OUT = "history.out.raw"
 AGENT_VERSION = "3.0.0"
 QDRANT_TOP_K = 2
 
-
+#ephemeral
 if OPENAI_TEST_KEY is None:
     print("openAI api test key is needed to run this test")
     exit(1)
@@ -62,7 +64,7 @@ except Exception as e:
     exit(1)
 
 #publish payload to the agent ot analyze the agent's output
-payload = {
+loc_payload = {
         'outcome': 'search',
         'terrain': 'mountainous',
         'category': 'hiker',
@@ -72,65 +74,106 @@ payload = {
         },
         'additional': "This person might have dementia and is likes to go to common spaces when wandering"
 }
-message_to_publish = wrap_envelope(
-    payload=payload,
-    source_name=AGENT_NAME,
-    source_version=AGENT_VERSION,
-    target_stream=STREAM_NAME_IN
-)
-bus.publish(message_to_publish)
 
-#get agent output
-agent_output = next(subGen)
-agent_summary = agent_output.payload["summary"]
-agent_actions = agent_output.payload["actions"]
+age_payload = {
+    'outcome': 'family',
+    'terrain': 'mountainous',
+    'category': 'vehicle',
+    'filter': {
+        'type': 'age',
+        'filter_value': "100"
+    },
+    'additional': 'Person of old age. Family members says they have dementia with episodes becoming more frequent'
+}
 
-#get retrieved context used for querying the llm to generate the actions
-incident_Info = payload["additional"]
-#copied from history agent main.py
-qdrant_context_embedding = sentence_transformer.encode(agent_summary + 
-                                                        f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
-additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
-#build retrieved context used by history agent
-additional_context = [context.payload["content"] for context in additional_context]
-additional_context.append(agent_summary)
-additional_context.append(incident_Info)
-    
+#NOTE if using the free plan/model you can only run one test a minute.
+test_payloads = [loc_payload, age_payload]
+
+for i, payload in enumerate(test_payloads):
+    print(f"\n\n---------------------- Running Test {i + 1} ----------------------\n")
+    first = True
+
+    while True:
+        try:
+                    
+            message_to_publish = wrap_envelope(
+                payload=payload,
+                source_name=AGENT_NAME,
+                source_version=AGENT_VERSION,
+                target_stream=STREAM_NAME_IN
+            )
+            bus.publish(message_to_publish)
+
+            #get agent output
+            agent_output = next(subGen)
+            agent_summary = agent_output.payload["summary"]
+            agent_actions = agent_output.payload["actions"]
+
+            #get retrieved context used for querying the llm to generate the actions
+            incident_Info = payload.get("additional", "")
+            #copied from history agent main.py
+            qdrant_context_embedding = sentence_transformer.encode(agent_summary + 
+                                                                    f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
+            additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
+            #build retrieved context used by history agent
+            additional_context = [context.payload["content"] for context in additional_context]
+            additional_context.append(agent_summary)
+            additional_context.append(incident_Info)
+                
 
 
-#setup eval for the agent output
-NUMBER_OF_TIPS = 3
+            #setup eval for the agent output
+            NUMBER_OF_TIPS = 3
 
-user_instructions = (
-    f"Task: Based on the previous summaries and the following search query, give {NUMBER_OF_TIPS} concise and practical "
-    "recommendations for conducting a search to locate the missing person.\n\n"
-)
+            user_instructions = (
+                f"Task: Based on the previous summaries and the following search query, give {NUMBER_OF_TIPS} concise and practical "
+                "recommendations for conducting a search to locate the missing person.\n\n"
+            )
 
-llm_input = user_instructions
-test_case = LLMTestCase(input=llm_input, actual_output=agent_actions, retrieval_context=additional_context)
-coherence_metric = GEval(
-    name="SAR Faithfulness",
-    evaluation_steps = [
-        "Extract the actions from the actual output.",
-        "Make sure that each action provides an effective task towards finding a missing person.",
-        f"It actions should be catered towards the person mentioned in this JSON payload {payload}."
-        "Penalize anything that is vague or unclear."
-        "Penalize actions that aren't backed up with a reason for them."
-        "Penalize the actions contradicting the the retrieval context"
-        "Ensure that provenance is given for actions."
-        "Give reasons for faithfulness score and make sure actions are using retrieved context."
-    ],
-    evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.RETRIEVAL_CONTEXT],
-    rubric=[
-        Rubric(score_range=(0,4), expected_outcome="Poor/Misuse of context and bad actions"),
-        Rubric(score_range=(5,7), expected_outcome="Acceptable actions and some usage of context"),
-        Rubric(score_range=(8,9), expected_outcome="Good context usage and good actions"),
-        Rubric(score_range=(10,10), expected_outcome="Excellent usage of retrieval context and effective actions."),
-    ],
-    verbose_mode=True,
-    model="gpt-4.1-nano"
-)
+            llm_input = user_instructions
+            test_case = LLMTestCase(input=llm_input, actual_output=agent_actions, retrieval_context=additional_context)
+            coherence_metric = GEval(
+                name="SAR Faithfulness",
+                evaluation_steps = [
+                    "Extract the actions from the actual output.",
+                    "Make sure that each action provides an effective task towards finding a missing person.",
+                    f"It actions should be catered towards the person mentioned in this JSON payload {payload}."
+                    "Penalize anything that is vague or unclear."
+                    "Penalize actions that aren't backed up with a reason for them."
+                    "Penalize the actions contradicting the the retrieval context"
+                    "Ensure that provenance is given for actions."
+                    "Give reasons for faithfulness score and make sure actions are using retrieved context."
+                ],
+                evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.RETRIEVAL_CONTEXT],
+                rubric=[
+                    Rubric(score_range=(0,4), expected_outcome="Poor/Misuse of context and bad actions"),
+                    Rubric(score_range=(5,7), expected_outcome="Acceptable actions and some usage of context"),
+                    Rubric(score_range=(8,9), expected_outcome="Good context usage and good actions"),
+                    Rubric(score_range=(10,10), expected_outcome="Excellent usage of retrieval context and effective actions."),
+                ],
+                verbose_mode=True,
+                model="gpt-4.1-nano"
+            )
 
-coherence_metric.measure(test_case)
-print(coherence_metric.score)
-print(coherence_metric.reason)
+            coherence_metric.measure(test_case)
+            print(coherence_metric.score)
+            print(coherence_metric.reason)
+
+            break
+
+        except (RetryError, RateLimitError, APIError) as e:
+            if first:
+                first = not first
+                print("Got an error most likely to do with rate limit...")
+                print("Sleeping for 60 seconds to try again")
+                time.sleep(60)
+            else:
+                print(f"Failed retry. Skipping test")
+
+
+        except Exception as e:
+            print("Error running test. Skipping test")
+
+            break
+
+        
