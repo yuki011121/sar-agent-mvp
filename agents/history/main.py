@@ -1,4 +1,3 @@
-import redis
 import logging
 import os
 import openai

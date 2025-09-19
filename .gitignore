@@ -21,3 +21,4 @@ venv/
 *.env
 
 agents/history/data
+*.svg
