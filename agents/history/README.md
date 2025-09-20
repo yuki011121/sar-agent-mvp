@@ -107,6 +107,11 @@ Note that qdrant by default does not enable security. Currently a local Qdrant i
     - openAI api key used for testing
     - Optional
         - feel free to use the same key as the OPENAI_KEY variable
+- ISRID_PATH
+    - path to ISRID csv file
+    - Optional
+        - Default "isrid2searches4calpoly_output.csv"
+        - This is not used by the history agent. It is only used by the ``isrid_parsing.py`` file.
 
 ## Testing
 For some tests you will need to include the ``OPENAI_TEST_KEY`` in the ``.env`` file. You will also need to run the command ``poetry sync --with dev`` to include the test dependencies in you poetry environment.
