@@ -19,8 +19,10 @@ Next the summaries, context from Qdrant, and additional info (from the "addition
 ## DockerFile
 The docker file assumes that the build context is the SAR-AGENT-MVP directory
 
+Installation of poetry is included as one of the base layers so the Docker build cache can be used effectively. Since all agents will utilize poetry, installation of poetry should be one of the base layers of the image.
 
-## Agent Data Input Contract
+
+## Agent Input Payload Contract
 Expected agent payload format and example
 ````JSON
 {
@@ -36,7 +38,7 @@ Expected agent payload format and example
     "type": "location: str | age: float/int | category: str",
     "value": "<value for type>"
   },
-  "additional": "<additional info>"
+  "additional": "<additional info (sentences)>"
 }
 ````
 
@@ -107,7 +109,7 @@ Note that qdrant by default does not enable security. Currently a local Qdrant i
         - feel free to use the same key as the OPENAI_KEY variable
 
 ## Testing
-To run some tests you will need to include the ``OPENAI_TEST_KEY`` in the ``.env`` file. You will also need to run the command ``poetry sync --with dev`` to include the test dependencies in you poetry environment.
+For some tests you will need to include the ``OPENAI_TEST_KEY`` in the ``.env`` file. You will also need to run the command ``poetry sync --with dev`` to include the test dependencies in you poetry environment.
 
 Two files are included in the ``test`` directory. The ``test_llm_output.py`` file is used for end to end testing using GEval to evaluate if the llm outputs are sound and utilize the retrieved context properly. The ``test_agent.py`` file is used to test the Qdrant database and ensures that the filtering used by the agent works as expected.
 
