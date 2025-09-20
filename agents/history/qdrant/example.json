@@ -1,0 +1,16 @@
+[
+  {
+    "provenance": {
+      "source": "source of content",
+      "author": "author of content"
+    },
+    "content": "Important SAR context" 
+  },
+  {
+    "provenance": {
+      "source": "source of content",
+      "author": "author of content"
+    },
+    "content": "More important SAR context!!!" 
+  }
+]

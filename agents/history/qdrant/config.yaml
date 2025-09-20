@@ -1,0 +1,12 @@
+#still have to figure out how to set up TLS
+service:
+  enable_tls: true
+  # Set an api-key.
+  # If set, all requests must include a header with the api-key.
+  # example header: `api-key: <API-KEY>`
+  #
+  # If you enable this you should also enable TLS.
+  # (Either above or via an external service like nginx.)
+  # Sending an api-key over an unencrypted channel is insecure.
+  api_key: your_secret_api_key_here
+  read_only_api_key: your_secret_read_only_api_key_here

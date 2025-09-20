@@ -80,18 +80,23 @@ The SAR context should all be stored in the same collection. The name of this co
 }
 ````
 
+### Qdrant help
+The ``qdrant`` directory includes the docker compose file that was used to create the Qdrant container. The file named ``insert_chunk.py`` can be used to automatically insert points into the Qdrant DB by specifying files that adhere to the format specified in the SAR context collection (it should be an array of these objects). An example of such a files is included as ``example.json``.
+
+Note that qdrant by default does not enable security. Currently a local Qdrant instant is used. A starter but incomplete security configuration is included with the ``config.yaml`` file. For information on the config file go [here](https://qdrant.tech/documentation/guides/configuration/). The config file should be included as a volume in the ``docker-comose.yaml`` file. For information about security go [here](https://qdrant.tech/documentation/guides/security/) 
+
 ## .env
 - OPENAI_KEY
-    - <b>Required</b>
     - Needed for OpenAI api
+    - <b>Required</b>
+- QDRANT_COLLECTION
+    - Needed to query collection in qdrant vector DB for SAR context
+    - <b>Required</b>
 - REDIS_URL
     - URL to connect to Redis
     - URL Schemes supported "redis://", "rediss://", "unix://". More info [here](https://redis.readthedocs.io/en/latest/connections.html)
     - Optional
         - If not included this will default to "redis://localhost:6379"
-- QDRANT_COLLECTION
-    - Needed to query collection in qdrant vector DB for SAR context
-    - <b>Required</b>
 - QDRANT_URL
     - URL to qdrant REST Api
     - Optional
@@ -102,7 +107,11 @@ The SAR context should all be stored in the same collection. The name of this co
         - feel free to use the same key as the OPENAI_KEY variable
 
 ## Testing
+To run some tests you will need to include the ``OPENAI_TEST_KEY`` in the ``.env`` file. You will also need to run the command ``poetry sync --with dev`` to include the test dependencies in you poetry environment.
+
 Two files are included in the ``test`` directory. The ``test_llm_output.py`` file is used for end to end testing using GEval to evaluate if the llm outputs are sound and utilize the retrieved context properly. The ``test_agent.py`` file is used to test the Qdrant database and ensures that the filtering used by the agent works as expected.
+
+Dependencies can be analyzed by running ``poetry run pydeps path/to/py_file.py`` to create a graph of dependencies. Note ``graphviz`` must be installed on your machine for pydeps to function. Go to the ``pydeps`` documentation for more information. 
 
 ## Other info
 The pyproject.toml imports the <i>shared files</i> from the [repo](https://github.com/RandomCyberCoder/Agentic-MVP-Shared) as the package <i>shared</i>.
