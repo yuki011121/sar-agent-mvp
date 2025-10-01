@@ -8,12 +8,12 @@ from shared.mcp_tools import create_tool_use_request, get_tool_call_from_respons
 
 load_dotenv()
 
-api_key = os.getenv("API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
 if not api_key:
-    raise ValueError("API_KEY not found. Make sure it's set in your .env file.")
+    raise ValueError("GOOGLE_API_KEY, GEMINI_API_KEY, or API_KEY not found. Make sure one is set in your .env file.")
 genai.configure(api_key=api_key)
 
-MODEL_NAME = os.getenv("GEN_TEXT_MODEL", "gemini-1.5-flash")
+MODEL_NAME = os.getenv("GEN_TEXT_MODEL", "gemini-2.0-flash")
 model = genai.GenerativeModel(MODEL_NAME)
 
 # Summarize one path: IDs, cost/time, elevation stats, and unique OSM tags.
@@ -218,5 +218,8 @@ def prepare_path_for_redis(path_data, llm_summary):
         return [prepare_single(p, s) for p, s in zip(path_data, llm_summary)]
     elif isinstance(path_data, dict) and isinstance(llm_summary, str):
         return prepare_single(path_data, llm_summary)
+    elif isinstance(path_data, list) and isinstance(llm_summary, str):
+        # Handle case where we have multiple paths but single summary
+        return [prepare_single(p, llm_summary) for p in path_data]
     else:
-        raise TypeError("Inputs must be (dict, str) or (list, list)")
+        raise TypeError(f"Inputs must be (dict, str), (list, list), or (list, str). Got ({type(path_data)}, {type(llm_summary)})")

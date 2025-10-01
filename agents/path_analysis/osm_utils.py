@@ -200,7 +200,12 @@ def visualize_graph_with_array(
     if title:
         ax.set_title(title)
     ax.legend()
-    plt.show()
+    
+    # Save the plot instead of showing it (for Docker environment)
+    output_file = "path_analysis_visualization.png"
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"Visualization saved to: {output_file}")
+    plt.close()  # Close the figure to free memory
 
 # Build per-path metadata: POI, cost, WGS84 nodes, and edges.
 def extract_paths_metadata(G, path_tuples, crs):

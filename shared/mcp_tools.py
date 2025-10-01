@@ -124,10 +124,10 @@ def _parse_gemini_response(
         candidate = llm_response["candidates"][0]
         part = candidate["content"]["parts"][0]
         
-        if "functionCall" not in part:
+        if "function_call" not in part:
             return None
 
-        call = part["functionCall"]
+        call = part["function_call"]
         name = call["name"]
         args = call.get("args", {}) 
         return name, args
@@ -136,7 +136,7 @@ def _parse_gemini_response(
 
 
 _DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-nano")
-_DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-1.5-flash")
+_DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.0-flash")
 
 _PROVIDER_MAP = {
     "openai": {
