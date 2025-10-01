@@ -19,33 +19,85 @@ venv/
 .env
 *.env
 
-#Other
-my_instructions.txt
-
-# Dataset and image files
-datasets/
-input_images/
-*.jpg
-*.jpeg
-*.png
-*.bmp
+# Large data files and models
+agents/path_analysis/data/*.tif
+agents/path_analysis/data/*.tiff
+agents/path_analysis/data/*.dem
+*.tif
 *.tiff
-*.gif
-*.webp
+*.dem
+*.geotiff
 
-# YOLO model files
+# Model files
 *.pt
 *.pth
+*.h5
+*.pkl
+*.joblib
 
-# Log files
+# Logs and debug files
 *.log
+*_debug.log
+*_test.log
 photo_analysis_agent.log
+path_analysis_agent.log
 
-# Temporary files
+# Test outputs and reports
+test_report_*.json
+*_results.json
+*_analysis_results.json
+interview_analysis_results.json
+
+# Cache and temporary files
+cache/
+*.cache
 *.tmp
 *.temp
-# Large DEM files
-agents/path_analysis/data/*.tif
 
-#OSMnx cache
-cache/
+# Visualization outputs
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+path_analysis_visualization.png
+
+# Docker volumes and data
+docker-data/
+volumes/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Large datasets (keep structure but ignore data)
+datasets/*/data/
+datasets/*/images/
+datasets/*/labels/
+input_images/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini

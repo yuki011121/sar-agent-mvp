@@ -1,21 +1,91 @@
+# docker-compose.yml
 version: "3.9"
 
+# Define a network for our services to communicate
+networks:
+  sar-net:
+
 services:
+  # --- Infrastructure ---
   redis:
     image: redis:7-alpine
+    container_name: redis
     ports: ["6379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - sar-net
 
   minio:
     image: minio/minio
+    container_name: minio
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     command: server /data --console-address ":9001"
     ports: ["9000:9000", "9001:9001"]
+    networks:
+      - sar-net
 
-  dev:
-    build: .
-    volumes:
-      - ./:/workspace
-    command: sleep infinity
+  # --- SAR Agents ---
+  photo-agent:
+    build:
+      context: ./agents/photo
+    container_name: photo-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  history-agent:
+    build:
+      context: ./agents/history
+    container_name: history-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  logistics-agent:
+    build:
+      context: ./agents/logistics
+    container_name: logistics-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  health-agent:
+    build:
+      context: ./agents/health
+    container_name: health-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  path-analysis-agent:
+    build:
+      context: ./agents/path-analysis
+    container_name: path-analysis-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  weather-agent:
+    build:
+      context: ./agents/weather
+    container_name: weather-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+      
+  interview-agent:
+    build:
+      context: ./agents/interview
+    container_name: interview-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net

@@ -73,7 +73,11 @@ def compute_paths_payload() -> Dict[str, Any]:
         )
 
     logger.info("Summarizing top paths with LLM...")
-    llm_summary = summarize_multiple_paths_with_llm(path_data)
+    try:
+        llm_summary = summarize_multiple_paths_with_llm(path_data)
+    except Exception as e:
+        logger.warning(f"LLM summary failed: {e}. Using fallback summary.")
+        llm_summary = "Path analysis completed successfully. LLM summary unavailable due to API key issues."
 
     final_data = prepare_path_for_redis(path_data, llm_summary)
 

@@ -46,7 +46,7 @@ except Exception as e:
 # Initialize Google Gemini
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash')
 else:
     logging.warning("GOOGLE_API_KEY not set. Using mock LLM responses.")
     model = None
@@ -278,7 +278,7 @@ def call_llm(prompt: str) -> Dict:
             tools=[extract_assessment_tool],
             system_instruction=system_instruction,
             provider="gemini",
-            model=os.getenv("GEMINI_DEFAULT_MODEL", "gemini-1.5-flash"),
+            model=os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.0-flash"),
         )
 
         response = model.generate_content(**req)
