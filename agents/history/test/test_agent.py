@@ -21,7 +21,7 @@ load_dotenv()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
 AGENT_VERSION = "3.0.0"
-OPENAI_KEY = os.getenv("OPENAI_KEY", None)
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", None)
 ISRID_VECTORIZER_PATH = "agents/history/models/isrid_tfidf_vectorizer.joblib"
 QDRANT_ISRID_COLLECTION = "ISRID_collection"
 TOP_K = 3

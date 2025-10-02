@@ -12,8 +12,7 @@ import time
 import logging
 import requests
 
-from shared.a2a_envelope import wrap_envelope
-from shared.redis_bus import RedisBus
+from shared import wrap_envelope, RedisBus
 
 AGENT_NAME = os.getenv("AGENT_NAME", "weather-agent")
 AGENT_VERSION = os.getenv("AGENT_VERSION", "1.1")

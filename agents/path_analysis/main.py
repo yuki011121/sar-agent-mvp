@@ -3,8 +3,7 @@ import logging
 import osmnx as ox
 from typing import Any, Dict
 
-from shared.a2a_envelope import wrap_envelope
-from shared.redis_bus import RedisBus
+from shared import wrap_envelope, RedisBus
 
 from agents.path_analysis.dem_utils import *
 from agents.path_analysis.osm_utils import *
