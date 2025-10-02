@@ -1,35 +1,34 @@
-import pandas as pd
-import numpy as np
-import redis
 import logging
 import os
-import json
 import openai
 from dotenv import load_dotenv
-from datetime import datetime, timezone
 # import required module
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
+from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ApiException
+from sentence_transformers import SentenceTransformer
+import ast
+from typing import List, Optional
+from qdrant_client.http.models.models import ScoredPoint
+from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+from joblib import load
 #for pub/sub for redis
-from shared.a2a_envelope import wrap_envelope
-from shared.redis_bus import RedisBus
-
-#using tools, mcp
+from shared import wrap_envelope, RedisBus
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+#REST api port for qdrant
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
-AGENT_VERSION = "1.1"
+AGENT_VERSION = "3.0.0"
 OPENAI_KEY = os.getenv("OPENAI_KEY", None)
-ISRID_COLUMNS = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category', 'Subject.Activity', 'Age',
-                           'Sex', 'Subject.Status']
 TOP_K_MATCHES = 3
-last_msg_ID = None
-vectorizer = TfidfVectorizer()
-# logger = logging.getLogger(__name__)
+QDRANT_TOP_K = 2
+QDRANT_ISRID_COLLECTION = "ISRID_collection"
+ISRID_VECTORIZER_PATH = "agents/history/models/isrid_tfidf_vectorizer.joblib"
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,54 +40,91 @@ if OPENAI_KEY is None:
     logging.info("Couldn't find a api key for OPENAI")
     exit(1)
 
+if QDRANT_COLLECTION is None:
+    logging.info("Couldn't find a collection name for QDRANT")
+    exit(1)
+
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
 try:
-    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
-    logging.info(f"Successfully connected to Redis at {REDIS_URL}")
-except redis.exceptions.ConnectionError as e:
-    logging.error(f"Could not connect to Redis: {e}")
+    client_Qdrant = QdrantClient(url=QDRANT_URL)
+    logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
+except ApiException as e:
+    logging.critical(f"Exception when calling QdrantClient: {e}")
+    exit(1)
+except Exception as e:
+    logging.critical(f"Could not connect to Qdrant: {e}")
     exit(1)
 
-# def redis_input():
-#     global last_msg_ID
-#     ID_INDEX = 0
-#     MSG_DATA_INDEX = 1
-#     logging.info("Blocking until a new message is found")
-#     #reads the oldest message (switch to $ for newest), limit 1 message to fetch, block forever until
-#     #a message is received 
-#     input_received = redis_client.xread({STREAM_NAME_IN: ('$' if last_msg_ID is None else last_msg_ID)}, count=1, block=0)
-#     #input_received is an array arrays that contain a key (stream name)
-#     # and an array of tuples (ID, field-value pairs)
-#     stream_data = input_received[0]
-#     msgs_read = stream_data[1]
-#     #there is only one msg that is read
-#     msg = msgs_read[0]
-#     last_msg_ID = msg[ID_INDEX]
-#     msg_data = msg[MSG_DATA_INDEX]
-#     logging.info("Read message and parsed correctly")
-#     return msg_data
+try:
+    sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
+    logging.info("Successfully loaded sentence transformer model")
+except Exception as e:
+    logging.critical(f"Error loading sentence transformer model: {e}")
+    exit(1)
 
-def redis_output(standardized_output):
-    redis_client.xadd(STREAM_NAME_OUT, {"data": json.dumps(standardized_output)})
-    logging.info(f"Summary + Action payload added to {STREAM_NAME_OUT} stream")
-
-def normalize_df(df : pd.DataFrame) -> pd.DataFrame:
-    logging.info("Normalizing Data")
-    columns = ['Data.Source', 'Incident.Outcome', 'Terrain', 'Subject.Category',
-       'Subject.Activity', 'Sex', 'Subject.Status']
-    for col in columns:
-        df[col] = df[col].str.lower()
-    df.to_csv('agents/history/isrid2searches4calpoly_output.csv')
+try:
+    ISRID_VECTORIZER = load(ISRID_VECTORIZER_PATH)
+    logging.info("Successfully loaded ISRID vectorizer")
+except Exception as e:
+    logging.critical(f"Error loading ISRID vectorizer: {e}. Fix by running isrid_parsing.py")
+    logging.critical(f"Make sure the path {ISRID_VECTORIZER_PATH} is correct" +  
+                     " or run agents/history/isrid_parsing.py to create it.")
+    exit(1)
 
 
-def find_match(data : pd.DataFrame, vectorized_rows, queryJSON: dict) -> pd.DataFrame:
+def qdrant_ISRID_filter(query_filter: dict) -> List[FieldCondition]:
+    filters = []
+
+    try:
+        query_filter["type"] = query_filter["type"].lower()
+        if query_filter["type"] == "category":
+            filters.append(FieldCondition(key="metadata.Subject_Category"
+                                        , match=MatchValue(value=query_filter["filter_value"])))
+        elif query_filter["type"] == "age":
+            age_target = float(str(query_filter["filter_value"]))
+            #grow delta for age range as age grows. fixed below a 10 years old
+            delta = 1 if age_target < 10 else age_target * 0.1
+            filters.append(FieldCondition(key="metadata.Age"
+                                        , range=Range(
+                                            gt = None,
+                                            gte = age_target - delta,
+                                            lt = None,
+                                            lte = age_target + delta
+                                        )))
+        elif query_filter["type"] == "location":
+            filters.append(FieldCondition(key="metadata.Data_Source"
+                                        , match=MatchValue(value=query_filter["filter_value"])))
+            
+    except Exception as e:
+        logging.error(f"Problem making filter for Qdrant ISRID query. Error: {e}")
+
+
+
+    return filters
+
+def find_match(queryJSON: dict) -> list[dict]:
+    # Convert queryJSON to a string and then to a vector
+    query_filter = queryJSON["filter"] if "filter" in queryJSON else None
+    queryJSON.pop('filter', None)
+    queryJSON.pop('additional', None)
     query_as_string = " ".join(queryJSON.values()).lower()
-    query_vectorized = vectorizer.transform([query_as_string])
-    similarities = cosine_similarity(query_vectorized, vectorized_rows)[0]
-    max_indexes = np.argsort(similarities)[::-1][:TOP_K_MATCHES]
-    return data.iloc[max_indexes]
+    query_vector = ISRID_VECTORIZER.transform([query_as_string]).toarray()[0]
+
+    if query_filter:
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES
+                                   , qdrant_ISRID_filter(query_filter))
+        
+        #if we couldn't find any points with the filter then search the entire database
+        if len(top_matches) == 0:
+            top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES)
+    else:
+        top_matches = qdrant_query(query_vector, QDRANT_ISRID_COLLECTION, TOP_K_MATCHES)
+    
+    formatted_matches = [match.payload["metadata"] for match in top_matches]
+    
+    return formatted_matches
+
 
 def verify_llm_response(response):
     if hasattr(response, "error") and response.error is not None:
@@ -96,9 +132,56 @@ def verify_llm_response(response):
         message = getattr(response.error, "message", "No message provided")
         raise Exception(f"Model error\nCode: {code}\nMessage: {message}")
 
-def prompt_llm(matches: pd.DataFrame, query: dict):
+
+def clean_llm_output(text: str) -> str:
+    """
+    Cleans LLM output text by decoding escape sequences and UTF-8 byte strings.
+    Useful before creating embeddings.
+    """
+    try:
+        # First pass: decode escape sequences (e.g. \\n -> \n)
+        text = ast.literal_eval(f'"{text}"')
+    except Exception:
+        pass  # Skip if it's already a properly escaped string
+
+    try:
+        # Second pass: decode UTF-8 bytes (e.g. \xe2\x80\x94 -> —)
+        text = text.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
+    except Exception:
+        pass  # Skip if not needed
+
+    text = text.replace("**", "")
+    return text
+
+
+def qdrant_query(query_vector: List[float], collection_name: str, results_limit: int
+                 , filter: Optional[List[FieldCondition]] = None) -> List[ScoredPoint]:
+    logging.info("Querying Qdrant")
+    filter = filter or []
+    try:
+        search_result = client_Qdrant.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            query_filter = Filter(
+                must=filter
+            ),
+            limit=results_limit,
+            with_payload=True
+        ).points
+        return search_result
+    except ApiException as e:
+        logging.error(f"Exception when calling QdrantClient for collection {collection_name}: {e}")
+        return [] 
+    except Exception as e:
+        logging.error(f"Error querying Qdrant: {e}")
+        return []
+
+def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
     logging.info("Querying LLM")
     NUMBER_OF_TIPS = 3
+
+    query.pop('filter', None)
+    query.pop('additional', None)
 
     #query llm for a summary of the top-k incident matches
     dev_instructions = (
@@ -111,19 +194,18 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
         "Task: Summarize the following search and rescue incidents and explain how they relate to the provided query.\n\n"
 
         "Input Format:\n"
-        "- The matching incidents are provided in JSON format, converted from a pandas DataFrame.\n"
+        "- The matching incidents are a list of python dictionaries converted to JSON. Each dictionary is a separate SAR incident\n"
+        "- Each key in the incident dictionary is a relevant piece of information about the incident.\n\n"
+        "- Note; that some key-value pairs may be abbreviated (e.g., data source)\n"
         "- The query is a Python dictionary converted to a string.\n"
-        "- Each key in the incident JSON is a column name, and its value is a dictionary mapping row indices to cell values.\n\n"
 
-        f"Example:\n"
-        '{\n  "location": {"0": "mountain trail", "1": "riverbank"},\n'
-        '  "outcome": {"0": "found alive", "1": "not found"}\n'
-        '}\n\n'
+        f"Example of an incident dictionary (Note: some columns such as data source might co):\n"
+        "{'Data.Source': 'nz', 'Incident.Outcome': 'search', 'Terrain': 'mountainous', 'Subject.Category': 'dementia', 'Subject.Activity': 'walkaway', 'Age': '67', 'Sex': 'f', 'Subject.Status': 'well'}"
         
         "Note: Some column values (e.g., data source) may be abbreviated.\n\n"
 
         f"Query Used:\n{str(query)}\n\n"
-        f"Matching Incidents:\n{matches.to_json()}\n\n"
+        f"Matching Incidents:\n{str(matches)}\n\n"
 
         "Guidelines:\n"
         "- Provide a clear and concise summary of the incidents.\n"
@@ -150,8 +232,12 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
 
     verify_llm_response(response)
 
-    summary = response.output[0].content[0].text
+    summary = clean_llm_output(response.output[0].content[0].text)
 
+    qdrant_context_embedding = sentence_transformer.encode(summary + 
+                                                           f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
+    additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
+    additional_context = [context.payload for context in additional_context]
     #query llm for actions to take based on summaries generated
     
     dev_instructions = (
@@ -169,7 +255,22 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
         "Guidelines:\n"
         "- Tailor each tip to the specific query details (terrain, subject profile, etc.).\n"
         "- Include reasoning for each recommendation.\n"
-        "- Be specific and actionable.\n"
+        "- Be specific and actionable.\n\n"
+
+        "Additional search and rescue (SAR) Context:\n"
+        "- This is SAR information that may be useful to consider when generating recommendations\n"
+        "- the format of this is a list of dictionaries\n"
+        "- Each dictionary is in the format {'provenance': {'source': '', 'author': ''}, 'content': 'relevant information'}\n"
+        "- The provenance field gives attribution for the content field. Use the author property to give attribution.\n"
+        f"{additional_context}\n\n"
+
+        "Additional Incident Information\n"
+        "- Any information in this section is known additional information about the incident\n"
+        f"- {incident_Info}"
+
+        "Additional Output Guidelines:\n"
+        "- include attribution at the end of the tips section as mentioned in the additional context\n"
+
     )
 
     response = client.responses.create(
@@ -184,14 +285,15 @@ def prompt_llm(matches: pd.DataFrame, query: dict):
                 "content": user_instructions
             }
         ],
-        max_output_tokens = 450,
+        max_output_tokens = 520,
         previous_response_id = response.id
     )
 
     verify_llm_response(response)
-    
-    actions = response.output[0].content[0].text
-    
+
+    actions = clean_llm_output(response.output[0].content[0].text)
+
+    # print(f"Summary: {summary} \n\n\n Actions: {actions}")
     return summary, actions
 
 def main():
@@ -204,23 +306,17 @@ def main():
         logging.critical(f"Failed to connect to Redis, cannot start agent. Error: {e}")
         return 
 
-
-
-    logging.info("Reading Isirid Dataset")
-    #key is the input name from redis json and value is column name in the isrid csv
-    isrid = pd.read_csv('agents/history/isrid2searches4calpoly_output.csv', index_col=0)
-    concatenated_rows = isrid.apply(lambda row: " ".join(row.astype(str)), axis=1)
-    vectorized_rows = vectorizer.fit_transform(concatenated_rows)
     logging.info("Start redis channel listening loop")
 
+    
     for message_read in subGen:
-        # # message_read = redis_input()
-        # print("got here")
-        # print(message_read.payload)
-        # # continue
-        matches = find_match(isrid, vectorized_rows, message_read.payload)
+
+        additional_info = message_read.payload.pop('additional', None)
+        additional_info = additional_info or ""
+
+        matches = find_match(message_read.payload)
         try:
-            summary, actions = prompt_llm(matches, message_read.payload)
+            summary, actions = prompt_llm(matches, message_read.payload, additional_info)
 
             payload = {
                 "summary" : summary,
@@ -235,7 +331,8 @@ def main():
             )
 
             bus.publish(message_to_publish)
-            print(message_to_publish)
+            logging.info(f"Successfully published payload to redis stream {STREAM_NAME_OUT}")
+            
         except Exception as e:
             logging.error(f"Error querying llm or publishing to redis: {e}")
         

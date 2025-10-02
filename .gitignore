@@ -7,6 +7,7 @@ __pycache__/
 env/
 venv/
 .venv/
+.deepeval/
 
 # IDEs
 .vscode/
@@ -101,3 +102,6 @@ input_images/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+agents/history/data
+*.svg
