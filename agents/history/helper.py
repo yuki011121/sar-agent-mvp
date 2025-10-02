@@ -5,9 +5,7 @@ import redis
 from dotenv import load_dotenv
 from typing import List, Generator
 
-from shared.a2a_envelope import wrap_envelope
-from shared.a2a_envelope import StandardMessage, parse_message_from_stream
-from shared.redis_bus import RedisBus
+from shared import wrap_envelope, StandardMessage, parse_message_from_stream, RedisBus
 
 logging.basicConfig(
     level=logging.INFO,

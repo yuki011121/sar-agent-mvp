@@ -9,8 +9,7 @@ import time
 from datetime import datetime
 
 
-from shared.redis_bus import RedisBus
-from shared.a2a_envelope import wrap_envelope, parse_message_from_stream
+from shared import RedisBus, wrap_envelope, parse_message_from_stream
 
 # Connect to Redis via RedisBus
 bus = RedisBus("redis://localhost:6379")

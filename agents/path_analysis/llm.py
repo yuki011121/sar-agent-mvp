@@ -4,7 +4,7 @@ import json
 import re
 import google.generativeai as genai
 
-from shared.mcp_tools import create_tool_use_request, get_tool_call_from_response
+from shared import create_tool_use_request, get_tool_call_from_response
 
 load_dotenv()
 
