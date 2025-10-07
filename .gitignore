@@ -19,6 +19,7 @@ venv/
 # Environment variables
 .env
 *.env
+ERROR_LOG.md
 
 # Large data files and models
 agents/path_analysis/data/*.tif
