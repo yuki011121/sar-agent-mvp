@@ -309,8 +309,20 @@ def call_llm(prompt: str) -> Dict:
                         text_parts.append(part["text"])
             if text_parts:
                 combined_text = "\n".join(text_parts)
+                # Handle JSON wrapped in code blocks
+                if "```json" in combined_text:
+                    json_start = combined_text.find("```json") + 7
+                    json_end = combined_text.find("```", json_start)
+                    if json_end != -1:
+                        combined_text = combined_text[json_start:json_end].strip()
+                elif "```" in combined_text:
+                    json_start = combined_text.find("```") + 3
+                    json_end = combined_text.find("```", json_start)
+                    if json_end != -1:
+                        combined_text = combined_text[json_start:json_end].strip()
                 return json.loads(combined_text)
-        except Exception:
+        except Exception as e:
+            logging.warning(f"JSON parsing failed: {e}")
             pass
 
         # If no usable text, raise to outer handler to return a safe fallback

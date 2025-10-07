@@ -1,64 +1,99 @@
 #!/usr/bin/env python3
 """
-Interview Analysis Agent - Standalone version without AutoGen dependency
+Interview Analysis Agent - Integrated with Redis and MCP A2A system
 """
 
-import openai
 import os
+import time
+import logging
 import json
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 
-class InterviewAnalystAgent:
-    def __init__(self, name, role, system_message, input_text=""):
-        self.name = name
-        self.role = role
-        self.system_message = system_message
-        self.input_text = input_text
-        
-        # Load environment variables
-        load_dotenv()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        
-        # Configure OpenAI
-        if self.openai_api_key:
-            openai.api_key = self.openai_api_key
+from shared import RedisBus, wrap_envelope, parse_message_from_stream, mcp_tools
 
-    def extract_interview_transcript(self, filename):
-        """Extract text from PDF file"""
+# Load environment variables
+load_dotenv()
+
+# Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 30))  # Check every 30 seconds
+AGENT_NAME = "interview-agent"
+AGENT_VERSION = "interview-agent-v1.0"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Redis stream names
+INTERVIEW_INPUT_STREAM = "interview.in.raw"
+INTERVIEW_OUTPUT_STREAM = "interview.analysis.raw"
+DEAD_LETTER_STREAM = "system.dead_letter"
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(AGENT_NAME)
+
+class InterviewAnalystAgent:
+    def __init__(self):
+        self.name = AGENT_NAME
+        self.version = AGENT_VERSION
+        self.openai_api_key = OPENAI_API_KEY
+        
+        # Initialize OpenAI if API key is available
+        if self.openai_api_key:
+            try:
+                import openai
+                openai.api_key = self.openai_api_key
+                self.openai_client = openai.OpenAI()
+                logger.info("OpenAI client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI client: {e}")
+                self.openai_client = None
+        else:
+            logger.warning("No OpenAI API key found. Using fallback heuristics.")
+            self.openai_client = None
+
+    def extract_interview_transcript(self, pdf_content: bytes) -> Optional[str]:
+        """Extract text from PDF content"""
         try:
-            reader = PdfReader(filename)
+            import io
+            from PyPDF2 import PdfReader
+            
+            pdf_file = io.BytesIO(pdf_content)
+            reader = PdfReader(pdf_file)
             text = ''
             for page in reader.pages:
                 text += page.extract_text()
             
-            self.input_text = text
-            print(f"Successfully extracted {len(text)} characters from PDF")
+            logger.info(f"Successfully extracted {len(text)} characters from PDF")
             return text
         except Exception as e:
-            print(f"Error extracting text from PDF: {e}")
+            logger.error(f"Error extracting text from PDF: {e}")
             return None
 
-    def ask_chatgpt(self, prompt):
-        """Ask ChatGPT a question"""
-        if not self.openai_api_key:
-            print("Warning: No OpenAI API key found. Using fallback heuristics.")
+    def ask_llm(self, prompt: str) -> Optional[str]:
+        """Ask LLM a question using OpenAI or fallback"""
+        if not self.openai_client:
+            logger.warning("No OpenAI client available. Using fallback.")
             return None
             
         try:
-            response = openai.OpenAI().chat.completions.create(
+            response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "system", "content": "You are a helpful assistant for analyzing interview transcripts in search and rescue operations."},
                     {"role": "user", "content": prompt}
                 ]
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"Error calling OpenAI API: {e}")
+            logger.error(f"Error calling OpenAI API: {e}")
             return None
 
-    def assign_confidence_rating(self, section: str):
+    def assign_confidence_rating(self, section: str) -> Dict[str, Any]:
         """Assign confidence rating to a section of text"""
         confidence_indicators = {
             "low": ["think", "maybe", "might", "unsure", "not sure", "can't remember", "sort of", "i guess", "possibly", "perhaps"],
@@ -93,7 +128,7 @@ class InterviewAnalystAgent:
             "confidence_level": confidence_level
         }
 
-    def extract_entities(self, sections):
+    def extract_entities(self, sections: List[str]) -> List[Dict[str, Any]]:
         """Extract entities (people, places, times) from sections"""
         extracted_data = []
         
@@ -104,7 +139,7 @@ class InterviewAnalystAgent:
                 f"{section}"
             )
             
-            response = self.ask_chatgpt(prompt)
+            response = self.ask_llm(prompt)
             
             if response:
                 try:
@@ -122,7 +157,7 @@ class InterviewAnalystAgent:
         
         return extracted_data
 
-    def _extract_entities_heuristic(self, section):
+    def _extract_entities_heuristic(self, section: str) -> Dict[str, List[str]]:
         """Fallback heuristic for entity extraction"""
         entities = {"people": [], "places": [], "times": []}
         
@@ -142,7 +177,7 @@ class InterviewAnalystAgent:
         
         return entities
 
-    def identify_important_sections(self, sections):
+    def identify_important_sections(self, sections: List[str]) -> List[Dict[str, Any]]:
         """Identify important sections using LLM or heuristics"""
         important_sections = []
         
@@ -159,7 +194,7 @@ class InterviewAnalystAgent:
                 "Respond with just the number (1-10):"
             )
             
-            response = self.ask_chatgpt(prompt)
+            response = self.ask_llm(prompt)
             
             if response:
                 try:
@@ -178,7 +213,7 @@ class InterviewAnalystAgent:
         
         return important_sections
 
-    def _calculate_importance_heuristic(self, section):
+    def _calculate_importance_heuristic(self, section: str) -> int:
         """Fallback heuristic for importance scoring"""
         important_keywords = [
             "missing", "saw", "witness", "suspect", "license", "plate", 
@@ -193,14 +228,14 @@ class InterviewAnalystAgent:
         # Normalize to 1-10 scale
         return min(score * 2, 10)
 
-    def parse_sections(self):
+    def parse_sections(self, text: str) -> List[str]:
         """Parse input text into logical sections"""
-        if not self.input_text:
+        if not text:
             return []
         
         # Split by double line breaks or periods followed by space and capital letter
         sections = []
-        raw_sections = self.input_text.split('\n\n')
+        raw_sections = text.split('\n\n')
         
         for section in raw_sections:
             # Further split by sentence boundaries
@@ -212,15 +247,13 @@ class InterviewAnalystAgent:
         
         return sections
 
-    def analyze_transcript(self, filename):
+    def analyze_transcript(self, transcript_text: str) -> Dict[str, Any]:
         """Complete transcript analysis workflow"""
-        # Extract transcript
-        text = self.extract_interview_transcript(filename)
-        if not text:
-            return {"error": "Could not extract text from PDF"}
+        if not transcript_text:
+            return {"error": "No transcript text provided"}
         
         # Parse sections
-        sections = self.parse_sections()
+        sections = self.parse_sections(transcript_text)
         
         # Perform analysis
         confidence_analysis = [self.assign_confidence_rating(section) for section in sections]
@@ -235,58 +268,130 @@ class InterviewAnalystAgent:
             "entity_extraction": entity_extraction,
             "important_sections": important_sections,
             "high_confidence_sections": [s for s in confidence_analysis if s["confidence_level"] == "high"],
-            "low_confidence_sections": [s for s in confidence_analysis if s["confidence_level"] == "low"]
+            "low_confidence_sections": [s for s in confidence_analysis if s["confidence_level"] == "low"],
+            "analysis_timestamp": datetime.utcnow().isoformat() + "Z"
         }
         
         return results
 
-    def process_request(self, request_type, **kwargs):
-        """Process different types of analysis requests"""
-        if request_type == "confidence":
-            return self.assign_confidence_rating(kwargs.get("text", ""))
-        elif request_type == "entities":
-            return self.extract_entities(kwargs.get("sections", []))
-        elif request_type == "importance":
-            return self.identify_important_sections(kwargs.get("sections", []))
-        elif request_type == "full_analysis":
-            return self.analyze_transcript(kwargs.get("filename", ""))
-        else:
-            return {"error": f"Unknown request type: {request_type}"}
+    def process_interview_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process interview analysis request"""
+        try:
+            # Extract transcript data
+            if "pdf_content" in request_data:
+                # Handle PDF content
+                pdf_content = request_data["pdf_content"]
+                if isinstance(pdf_content, str):
+                    # Base64 encoded PDF
+                    import base64
+                    pdf_content = base64.b64decode(pdf_content)
+                
+                transcript_text = self.extract_interview_transcript(pdf_content)
+            elif "transcript_text" in request_data:
+                # Handle plain text
+                transcript_text = request_data["transcript_text"]
+            else:
+                return {"error": "No transcript data provided (pdf_content or transcript_text required)"}
+            
+            if not transcript_text:
+                return {"error": "Failed to extract transcript text"}
+            
+            # Perform analysis
+            analysis_result = self.analyze_transcript(transcript_text)
+            
+            return {
+                "status": "success",
+                "analysis": analysis_result,
+                "metadata": {
+                    "agent_name": self.name,
+                    "agent_version": self.version,
+                    "processed_at": datetime.utcnow().isoformat() + "Z"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing interview request: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "metadata": {
+                    "agent_name": self.name,
+                    "agent_version": self.version,
+                    "processed_at": datetime.utcnow().isoformat() + "Z"
+                }
+            }
+
+def main():
+    """Main function for the Interview Analysis Agent"""
+    logger.info(f"Initializing {AGENT_NAME}...")
+    
+    # Initialize Redis connection
+    try:
+        bus = RedisBus(REDIS_URL)
+        logger.info(f"Successfully connected to Redis at {REDIS_URL}")
+    except Exception as e:
+        logger.critical(f"Failed to connect to Redis: {e}")
+        return
+    
+    # Initialize the interview analyst
+    analyst = InterviewAnalystAgent()
+    
+    logger.info(f"{AGENT_NAME} starting up. Listening on stream: {INTERVIEW_INPUT_STREAM}")
+    logger.info(f"Update interval: {UPDATE_INTERVAL_SECONDS} seconds")
+    
+    # Main processing loop using subscribe
+    try:
+        for message in bus.subscribe(
+            group_name=f"{AGENT_NAME}-group",
+            consumer_name=f"{AGENT_NAME}-consumer",
+            streams=[INTERVIEW_INPUT_STREAM],
+            block_ms=UPDATE_INTERVAL_SECONDS * 1000
+        ):
+            try:
+                # Extract payload from StandardMessage object
+                payload = message.payload
+                logger.info(f"Processing interview request from message {message.envelope.message_id}")
+                
+                # Process the interview request
+                result = analyst.process_interview_request(payload)
+                
+                # Publish result to output stream
+                output_message = wrap_envelope(
+                    payload=result,
+                    source_name=AGENT_NAME,
+                    source_version=AGENT_VERSION,
+                    target_stream=INTERVIEW_OUTPUT_STREAM
+                )
+                
+                bus.publish(output_message)
+                logger.info(f"Published interview analysis result to {INTERVIEW_OUTPUT_STREAM}")
+                
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                
+                # Send error to dead letter stream
+                error_payload = {
+                    "failed_agent": f"{AGENT_NAME}:{AGENT_VERSION}",
+                    "error_message": str(e),
+                    "error_type": type(e).__name__,
+                    "context": "Failed while processing interview analysis request"
+                }
+                
+                error_message = wrap_envelope(
+                    payload=error_payload,
+                    source_name=AGENT_NAME,
+                    source_version=AGENT_VERSION,
+                    target_stream=DEAD_LETTER_STREAM
+                )
+                
+                bus.publish(error_message)
+                logger.error(f"Sent error to dead letter stream: {DEAD_LETTER_STREAM}")
+                
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal, shutting down gracefully")
+    except Exception as e:
+        logger.error(f"Unexpected error in main loop: {e}")
+        time.sleep(UPDATE_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    pdf_path = "data/transcripts/Mock Search 3-8-25 transcription 2.pdf"
-
-    print(f"--- Initializing Interview Analyst Agent ---")
-    analyst = InterviewAnalystAgent(
-        name="Interview Analyst",
-        role="To analyze interview transcripts for key clues.",
-        system_message="You are an AI assistant that extracts key information from interview transcripts."
-    )
-
-    print(f"\n--- Starting Full Analysis of {pdf_path} ---")
-    results = analyst.analyze_transcript(pdf_path)
-
-    output_path = "interview_analysis_results.json"
-    with open(output_path, "w") as f:
-        json.dump(results, f, indent=4)
-
-    print(f"\n--- Analysis Complete ---")
-    print(f"Results saved to: {output_path}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    main()
