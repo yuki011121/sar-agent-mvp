@@ -20,6 +20,8 @@ venv/
 .env
 *.env
 ERROR_LOG.md
+AGENT_EXAMPLES.md
+SAR_SYSTEM_ARCHITECTURE.md
 
 # Large data files and models
 agents/path_analysis/data/*.tif
@@ -62,7 +64,7 @@ cache/
 *.jpeg
 *.gif
 *.svg
-path_analysis_visualization.png
+# path_analysis_visualization.png
 
 # Docker volumes and data
 docker-data/
