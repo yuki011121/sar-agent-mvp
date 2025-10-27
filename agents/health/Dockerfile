@@ -10,26 +10,22 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    openai \
+    requests \
     redis \
     python-dotenv \
-    qdrant-client \
-    sentence-transformers \
-    joblib \
-    scikit-learn
+    google-generativeai
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
 
-# Copy agent code (this will copy everything including models directory)
-COPY agents/history ./agents/history
+# Copy agent code
+COPY agents/health ./agents/health
 COPY agents/base_agent.py ./agents/base_agent.py
 
 # Set environment
 ENV PYTHONPATH=/workspace
 ENV REDIS_URL=redis://redis:6379
-ENV QDRANT_URL=http://host.docker.internal:6333
 
-WORKDIR /workspace/agents/history
+WORKDIR /workspace/agents/health
 
-CMD ["bash", "-c", "cd /workspace && python agents/history/main.py"]
+CMD ["python", "main.py"]

@@ -19,9 +19,27 @@ venv/
 # Environment variables
 .env
 *.env
+
+# Documentation files containing Chinese text
 ERROR_LOG.md
 AGENT_EXAMPLES.md
 SAR_SYSTEM_ARCHITECTURE.md
+AUTOGEN_SUCCESS_SUMMARY.md
+CLUEMEISTER_FILES_EXPLAINED.md
+COMMAND_AGENT_FINAL_SUMMARY.md
+COMMAND_AGENT_TEST_RESULTS.md
+DOCKER_SETUP_COMPLETE.md
+DOCKER_WORKFLOW_VISUAL.md
+NEXT_STEPS_README.md
+SYSTEM_DATA_FLOW.md
+system_architecture_visual.md
+REDIS_DATA_TEST_SUCCESS.md
+REDIS_INTEGRATION_SUMMARY.md
+TEST_RESULTS_SUMMARY.md
+WEATHER_PAYLOAD_EXAMPLE.md
+README.md
+agents/*/README.md
+agents/*/*/README.md
 
 # Large data files and models
 agents/path_analysis/data/*.tif

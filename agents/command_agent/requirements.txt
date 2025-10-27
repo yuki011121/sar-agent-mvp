@@ -1,0 +1,14 @@
+# Command Agent Dependencies
+
+# AutoGen for agent orchestration
+pyautogen>=0.2.0
+
+# OpenAI for LLM
+openai>=1.0.0
+
+# Redis for data access
+redis>=6.0.0
+
+# Other dependencies (from shared package)
+python-dotenv>=1.0.0
+
