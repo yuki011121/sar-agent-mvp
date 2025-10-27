@@ -11,6 +11,9 @@ import numpy as np
 import traceback
 from typing import Dict, List, Optional, Any
 
+# Import RedisBus for StandardMessage format
+from shared import RedisBus, wrap_envelope
+
 # Additional imports for enhanced person analysis
 try:
     import face_recognition
@@ -495,24 +498,7 @@ def safe_analyze_image(image_path: str) -> Dict[str, Any]:
             "error_type": "analysis_error"
         }
 
-def safe_publish_to_redis(message: Dict[str, Any], redis_client: redis.Redis) -> bool:
-    """Safely publish message to Redis with retry logic."""
-    for attempt in range(MAX_RETRIES):
-        try:
-            message_id = redis_client.xadd(REDIS_OUTPUT_STREAM, {"data": json.dumps(message)})
-            logger.info(f"Published analysis to stream '{REDIS_OUTPUT_STREAM}' with ID {message_id}")
-            return True
-        except redis.exceptions.RedisError as e:
-            logger.error(f"Redis publish attempt {attempt + 1} failed: {e}")
-            if attempt < MAX_RETRIES - 1:
-                logger.info(f"Retrying Redis publish in {RETRY_DELAY} seconds...")
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error("Failed to publish to Redis after all retries")
-                return False
-        except Exception as e:
-            logger.error(f"Unexpected Redis error: {e}")
-            return False
+# safe_publish_to_redis function removed - now using RedisBus and StandardMessage format
 
 def calculate_search_priority(detections: List[Dict[str, Any]], person_analysis: Dict[str, Any]) -> str:
     """Calculate search priority based on SAR-relevant factors."""
@@ -741,9 +727,9 @@ def main():
     logger.info(f"{AGENT_VERSION} starting up. Monitoring {IMAGE_INPUT_DIR} for new images.")
     logger.info(f"Face analysis: {'Available' if FACE_RECOGNITION_AVAILABLE else 'Not available'}")
     
-    # Initialize components with error handling
-    redis_client = safe_redis_connection()
-    if redis_client is None:
+    # Initialize RedisBus for StandardMessage format
+    bus = RedisBus(REDIS_URL)
+    if not bus:
         logger.critical("Cannot start agent without Redis connection")
         exit(1)
     
@@ -813,9 +799,18 @@ def main():
                     print(json.dumps(message, indent=2))
                     print("============================\n")
                     
-                    # Publish to Redis
-                    if not safe_publish_to_redis(message, redis_client):
-                        logger.error(f"Failed to publish results for {filename}")
+                    # Publish to Redis using StandardMessage format
+                    try:
+                        standard_message = wrap_envelope(
+                            payload=message,
+                            source_name="photo-analysis-agent",
+                            source_version="v1.0",
+                            target_stream=REDIS_OUTPUT_STREAM
+                        )
+                        bus.publish(standard_message)
+                        logger.info(f"Successfully published analysis for {filename} to {REDIS_OUTPUT_STREAM}")
+                    except Exception as e:
+                        logger.error(f"Failed to publish results for {filename}: {e}")
                     
                     processed_files.add(filename)
                     consecutive_errors = 0  # Reset error counter on success

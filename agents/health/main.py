@@ -16,7 +16,7 @@ load_dotenv()
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 60))  # Check every minute
+UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))  # Check every hour
 AGENT_VERSION = "health-agent-v1.0"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 

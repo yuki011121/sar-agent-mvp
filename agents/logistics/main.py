@@ -12,7 +12,7 @@ import random
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 AGENT_VERSION = "logistics-chief-v1.0"
 STREAM_NAME = "logistics.requests.raw"
-UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 1800)) 
+UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))  # 1 hour 
 
 logging.basicConfig(
     level=logging.INFO,
