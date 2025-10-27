@@ -5,6 +5,9 @@ version: "3.9"
 networks:
   sar-net:
 
+volumes:
+  qdrant_storage:
+
 services:
   # --- Infrastructure ---
   redis:
@@ -29,7 +32,8 @@ services:
   # --- SAR Agents ---
   photo-agent:
     build:
-      context: ./agents/photo
+      context: .
+      dockerfile: ./agents/photo_analysis/Dockerfile
     container_name: photo-agent
     env_file: .env
     depends_on: [redis]
@@ -38,43 +42,56 @@ services:
 
   history-agent:
     build:
-      context: ./agents/history
+      context: .
+      dockerfile: ./agents/history/Dockerfile
     container_name: history-agent
     env_file: .env
     depends_on: [redis]
     networks:
       - sar-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   logistics-agent:
     build:
-      context: ./agents/logistics
+      context: .
+      dockerfile: ./agents/logistics/Dockerfile
     container_name: logistics-agent
     env_file: .env
+    environment:
+      - UPDATE_INTERVAL_SECONDS=3600  # 1 hour
     depends_on: [redis]
     networks:
       - sar-net
 
   health-agent:
     build:
-      context: ./agents/health
+      context: .
+      dockerfile: ./agents/health/Dockerfile
     container_name: health-agent
     env_file: .env
+    environment:
+      - UPDATE_INTERVAL_SECONDS=3600  # 1 hour
     depends_on: [redis]
     networks:
       - sar-net
 
   path-analysis-agent:
     build:
-      context: ./agents/path-analysis
+      context: .
+      dockerfile: ./agents/path_analysis/Dockerfile
     container_name: path-analysis-agent
     env_file: .env
+    environment:
+      - DO_VISUALIZE=false
     depends_on: [redis]
     networks:
       - sar-net
 
   weather-agent:
     build:
-      context: ./agents/weather
+      context: .
+      dockerfile: ./agents/weather/Dockerfile
     container_name: weather-agent
     env_file: .env
     depends_on: [redis]
@@ -83,9 +100,34 @@ services:
       
   interview-agent:
     build:
-      context: ./agents/interview
+      context: .
+      dockerfile: ./agents/interview/Dockerfile
     container_name: interview-agent
     env_file: .env
     depends_on: [redis]
     networks:
       - sar-net
+
+  cluemeister-agent:
+    build:
+      context: .
+      dockerfile: ./agents/cluemeister/Dockerfile
+    container_name: cluemeister-agent
+    env_file: .env
+    depends_on: [redis]
+    networks:
+      - sar-net
+
+  command-agent:
+    build:
+      context: .
+      dockerfile: ./agents/command_agent/Dockerfile
+    container_name: command-agent
+    env_file: .env
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on: [redis]
+    networks:
+      - sar-net
+    stdin_open: true
+    tty: true
