@@ -29,7 +29,8 @@ services:
   # --- SAR Agents ---
   photo-agent:
     build:
-      context: ./agents/photo
+      context: .
+      dockerfile: ./agents/photo_analysis/Dockerfile
     container_name: photo-agent
     env_file: .env
     depends_on: [redis]
@@ -38,7 +39,8 @@ services:
 
   history-agent:
     build:
-      context: ./agents/history
+      context: .
+      dockerfile: ./agents/history/Dockerfile
     container_name: history-agent
     env_file: .env
     depends_on: [redis]
@@ -47,7 +49,8 @@ services:
 
   logistics-agent:
     build:
-      context: ./agents/logistics
+      context: .
+      dockerfile: ./agents/logistics/Dockerfile
     container_name: logistics-agent
     env_file: .env
     depends_on: [redis]
@@ -56,7 +59,8 @@ services:
 
   health-agent:
     build:
-      context: ./agents/health
+      context: .
+      dockerfile: ./agents/health/Dockerfile
     container_name: health-agent
     env_file: .env
     depends_on: [redis]
@@ -65,7 +69,8 @@ services:
 
   path-analysis-agent:
     build:
-      context: ./agents/path-analysis
+      context: .
+      dockerfile: ./agents/path_analysis/Dockerfile
     container_name: path-analysis-agent
     env_file: .env
     depends_on: [redis]
@@ -74,16 +79,18 @@ services:
 
   weather-agent:
     build:
-      context: ./agents/weather
+      context: .
+      dockerfile: ./agents/weather/Dockerfile
     container_name: weather-agent
     env_file: .env
     depends_on: [redis]
     networks:
       - sar-net
-      
+
   interview-agent:
     build:
-      context: ./agents/interview
+      context: .
+      dockerfile: ./agents/interview/Dockerfile
     container_name: interview-agent
     env_file: .env
     depends_on: [redis]

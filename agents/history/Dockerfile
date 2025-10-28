@@ -7,4 +7,5 @@ COPY poetry.lock pyproject.toml ./
 COPY .env ./
 COPY agents/history/main.py  ./agents/history/
 COPY agents/history/models/isrid_tfidf_vectorizer.joblib  ./agents/history/models/
+ENV REDIS_URL=redis://redis:6379
 CMD ["sleep", "infinity"]
