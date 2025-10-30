@@ -12,3 +12,4 @@ redis>=6.0.0
 # Other dependencies (from shared package)
 python-dotenv>=1.0.0
 
+

@@ -151,7 +151,6 @@ echo "Recent messages from cluemeister.analysis.raw:"
 docker exec redis redis-cli XREVRANGE cluemeister.analysis.raw + - COUNT 1 2>/dev/null | head -10
 echo ""
 
-# Additional samples for other agents
 echo "Recent messages from health.assessment.raw:"
 docker exec redis redis-cli XREVRANGE health.assessment.raw + - COUNT 1 2>/dev/null | head -10
 echo ""

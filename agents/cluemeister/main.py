@@ -14,26 +14,21 @@ from typing import Dict, List, Any, Optional, Set
 from dataclasses import asdict
 from dotenv import load_dotenv
 
-# 导入知识图谱
 from knowledge_graph import (
     KnowledgeGraph, ClueMeisterGraphBuilder, 
     EntityType, RelationType, Entity, Relation
 )
 
-# 导入Redis通信
 from shared import RedisBus, wrap_envelope, parse_message_from_stream
 
-# 加载环境变量
 load_dotenv()
 
-# 配置
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 10))
 AGENT_NAME = "cluemeister-agent"
 AGENT_VERSION = "cluemeister-agent-v1.0"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Redis流配置
 INPUT_STREAMS = [
     "photo.analysis.raw",
     "interview.analysis.raw", 
@@ -353,6 +348,186 @@ class ClueMeisterAgent:
         except Exception as e:
             logger.error(f"Error processing weather data: {e}")
             return []
+
+    def process_health_assessment(self, health_data: Dict[str, Any]) -> List[str]:
+        """Process health assessment data into KG entities and relations"""
+        try:
+            logger.info("Processing health assessment data")
+
+            entity_ids: List[str] = []
+
+            # Create health assessment event
+            assessment = health_data.get("assessment", {})
+            recommended_actions = assessment.get("recommended_actions") or health_data.get("recommended_actions", [])
+            required_supplies = assessment.get("required_supplies") or health_data.get("required_supplies", [])
+
+            health_event_id = self.graph_builder._generate_id("health_assessment")
+            health_event = Entity(
+                id=health_event_id,
+                type=EntityType.EVENT,
+                name="Health Assessment",
+                properties={
+                    "risk_level": assessment.get("risk_level") or health_data.get("risk_level"),
+                    "primary_health_risks": assessment.get("primary_health_risks", []),
+                    "recommended_actions": recommended_actions,
+                },
+                confidence=0.8,
+                source="health_assessment"
+            )
+            self.knowledge_graph.add_entity(health_event)
+            entity_ids.append(health_event_id)
+
+            # Create resource entities and link
+            for supply in required_supplies:
+                item_name = supply.get("item") or supply.get("name")
+                if not item_name:
+                    continue
+                resource_id = self.graph_builder._generate_id("resource")
+                resource_entity = Entity(
+                    id=resource_id,
+                    type=EntityType.RESOURCE,
+                    name=item_name,
+                    properties={
+                        "quantity": supply.get("quantity"),
+                        "priority": supply.get("priority"),
+                    },
+                    confidence=0.9,
+                    source="health_assessment"
+                )
+                self.knowledge_graph.add_entity(resource_entity)
+                entity_ids.append(resource_id)
+                self.graph_builder.link_entities(
+                    health_event_id,
+                    resource_id,
+                    RelationType.REQUIRES,
+                    {"reason": "required_supply_from_health_assessment"},
+                    confidence=0.9,
+                    source="health_assessment",
+                )
+
+            logger.info(f"Processed health assessment: {len(entity_ids)} entities created")
+            return entity_ids
+        except Exception as e:
+            logger.error(f"Error processing health assessment: {e}")
+            return []
+
+    def process_logistics_request(self, logistics_data: Dict[str, Any]) -> List[str]:
+        """Process logistics request data into KG entities and relations"""
+        try:
+            logger.info("Processing logistics request data")
+
+            entity_ids: List[str] = []
+
+            priority = logistics_data.get("priority") or logistics_data.get("metadata", {}).get("priority")
+            supplies = logistics_data.get("supplies_needed") or logistics_data.get("supplies") or []
+
+            request_id = self.graph_builder._generate_id("logistics_request")
+            request_entity = Entity(
+                id=request_id,
+                type=EntityType.EVENT,
+                name="Logistics Request",
+                properties={
+                    "priority": priority,
+                },
+                confidence=0.8,
+                source="logistics_request"
+            )
+            self.knowledge_graph.add_entity(request_entity)
+            entity_ids.append(request_id)
+
+            for supply in supplies:
+                item_name = supply.get("item") or supply.get("name")
+                if not item_name:
+                    continue
+                resource_id = self.graph_builder._generate_id("resource")
+                resource_entity = Entity(
+                    id=resource_id,
+                    type=EntityType.RESOURCE,
+                    name=item_name,
+                    properties={
+                        "quantity": supply.get("quantity"),
+                        "priority": supply.get("priority"),
+                    },
+                    confidence=0.9,
+                    source="logistics_request"
+                )
+                self.knowledge_graph.add_entity(resource_entity)
+                entity_ids.append(resource_id)
+                self.graph_builder.link_entities(
+                    request_id,
+                    resource_id,
+                    RelationType.REQUIRES,
+                    {"reason": "supplies_needed"},
+                    confidence=0.9,
+                    source="logistics_request",
+                )
+
+            logger.info(f"Processed logistics request: {len(entity_ids)} entities created")
+            return entity_ids
+        except Exception as e:
+            logger.error(f"Error processing logistics request: {e}")
+            return []
+
+    def process_path_analysis(self, path_data: Dict[str, Any]) -> List[str]:
+        """Process path analysis into KG entities and relations"""
+        try:
+            logger.info("Processing path analysis data")
+
+            entity_ids: List[str] = []
+
+            results = path_data.get("results", [])
+            for result in results:
+                path_id_local = result.get("path_id")
+                metrics = result.get("metrics", {})
+                poi = result.get("poi", {})
+
+                # Create path candidate entity
+                path_entity_id = self.graph_builder._generate_id("path_candidate")
+                path_entity = Entity(
+                    id=path_entity_id,
+                    type=EntityType.EVENT,
+                    name=f"Path Candidate {path_id_local}",
+                    properties={
+                        "summary": result.get("summary"),
+                        "metrics": metrics,
+                    },
+                    confidence=0.7,
+                    source="path_analysis"
+                )
+                self.knowledge_graph.add_entity(path_entity)
+                entity_ids.append(path_entity_id)
+
+                # Create location entity for POI if present
+                if poi:
+                    loc_entity_id = self.graph_builder._generate_id("location")
+                    loc_entity = Entity(
+                        id=loc_entity_id,
+                        type=EntityType.LOCATION,
+                        name=poi.get("name") or "POI",
+                        properties={
+                            "poi_type": poi.get("type"),
+                            "lat": poi.get("lat"),
+                            "lon": poi.get("lon"),
+                        },
+                        confidence=0.8,
+                        source="path_analysis"
+                    )
+                    self.knowledge_graph.add_entity(loc_entity)
+                    entity_ids.append(loc_entity_id)
+                    self.graph_builder.link_entities(
+                        path_entity_id,
+                        loc_entity_id,
+                        RelationType.LOCATED_IN,
+                        {"relation": "path_to_poi"},
+                        confidence=0.8,
+                        source="path_analysis",
+                    )
+
+            logger.info(f"Processed path analysis: {len(entity_ids)} entities created")
+            return entity_ids
+        except Exception as e:
+            logger.error(f"Error processing path analysis: {e}")
+            return []
     
     def analyze_cross_agent_correlations(self) -> Dict[str, Any]:
         """Analyze cross-agent data correlations"""
@@ -551,6 +726,12 @@ class ClueMeisterAgent:
                 entity_ids = self.process_history_analysis(data)
             elif "weather.forecast.raw" in stream_name:
                 entity_ids = self.process_weather_data(data)
+            elif "path.analysis.raw" in stream_name:
+                entity_ids = self.process_path_analysis(data)
+            elif "health.assessment.raw" in stream_name:
+                entity_ids = self.process_health_assessment(data)
+            elif "logistics.requests.raw" in stream_name:
+                entity_ids = self.process_logistics_request(data)
             else:
                 logger.warning(f"Unknown stream: {stream_name}")
                 return {"status": "ignored", "reason": "unknown_stream"}
