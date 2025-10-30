@@ -20,7 +20,7 @@ venv/
 .env
 *.env
 
-# Documentation files containing Chinese text
+# Documentation files
 ERROR_LOG.md
 AGENT_EXAMPLES.md
 SAR_SYSTEM_ARCHITECTURE.md
@@ -37,6 +37,7 @@ REDIS_DATA_TEST_SUCCESS.md
 REDIS_INTEGRATION_SUMMARY.md
 TEST_RESULTS_SUMMARY.md
 WEATHER_PAYLOAD_EXAMPLE.md
+agents/command_agent/*.md
 # README.md
 # agents/*/README.md
 # agents/*/*/README.md
