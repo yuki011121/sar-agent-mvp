@@ -151,6 +151,23 @@ echo "Recent messages from cluemeister.analysis.raw:"
 docker exec redis redis-cli XREVRANGE cluemeister.analysis.raw + - COUNT 1 2>/dev/null | head -10
 echo ""
 
+# Additional samples for other agents
+echo "Recent messages from health.assessment.raw:"
+docker exec redis redis-cli XREVRANGE health.assessment.raw + - COUNT 1 2>/dev/null | head -10
+echo ""
+
+echo "Recent messages from logistics.requests.raw:"
+docker exec redis redis-cli XREVRANGE logistics.requests.raw + - COUNT 1 2>/dev/null | head -10
+echo ""
+
+echo "Recent messages from interview.analysis.raw:"
+docker exec redis redis-cli XREVRANGE interview.analysis.raw + - COUNT 1 2>/dev/null | head -10
+echo ""
+
+echo "Recent messages from history.out.raw:"
+docker exec redis redis-cli XREVRANGE history.out.raw + - COUNT 1 2>/dev/null | head -10
+echo ""
+
 echo "=========================================="
 echo "FINAL SYSTEM STATUS"
 echo "=========================================="
