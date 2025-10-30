@@ -12,9 +12,9 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 # Check if containers are running
-if ! docker-compose ps | grep -q "Up"; then
+if ! docker compose ps | grep -q "Up"; then
     echo "Starting all SAR agent containers..."
-    docker-compose up -d
+    docker compose up -d
     echo "Waiting for containers to be ready..."
     sleep 15
 fi
