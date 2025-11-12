@@ -1,4 +1,4 @@
-name: Agent Smoke Test
+nname: Agent Smoke Test
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
       - name: Install deps
         run: pip install -r requirements-eval.txt
 
-            - name: Run smoke test (Azure agent)
+      - name: Run smoke test (Azure agent)
         env:
           AGENT_MODE: azure_agents
           PROJECT_ENDPOINT: ${{ secrets.PROJECT_ENDPOINT }}
@@ -28,8 +28,6 @@ jobs:
           AGENT_BEARER_TOKEN: ${{ secrets.AGENT_BEARER_TOKEN }}
         run: |
           python -m eval.smoke_test --dataset eval/golden.jsonl --limit 5
-
-
 
       - name: Upload artifacts
         if: always()
@@ -43,3 +41,4 @@ jobs:
         run: |
           echo "## Smoke Test Summary" >> $GITHUB_STEP_SUMMARY
           cat eval/out/summary_* >> $GITHUB_STEP_SUMMARY
+
