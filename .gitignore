@@ -126,4 +126,8 @@ ehthumbs.db
 Desktop.ini
 
 agents/history/data
-*.svg
+*.svg.venv/
+__pycache__/
+.DS_Store
+eval/out/
+.env
