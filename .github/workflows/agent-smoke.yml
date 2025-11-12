@@ -19,15 +19,16 @@ jobs:
       - name: Install deps
         run: pip install -r requirements-eval.txt
 
-      - name: Run smoke test (Azure agent)
+            - name: Run smoke test (Azure agent)
         env:
           AGENT_MODE: azure_agents
           PROJECT_ENDPOINT: ${{ secrets.PROJECT_ENDPOINT }}
           AGENT_ID: ${{ secrets.AGENT_ID }}
-          AGENT_TOKEN: ${{ secrets.AGENT_TOKEN }}  # client prefers bearer, falls back to this api-key
           API_VERSION: v1
+          AGENT_BEARER_TOKEN: ${{ secrets.AGENT_BEARER_TOKEN }}
         run: |
           python -m eval.smoke_test --dataset eval/golden.jsonl --limit 5
+
 
 
       - name: Upload artifacts
