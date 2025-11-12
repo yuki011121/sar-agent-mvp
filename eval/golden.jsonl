@@ -1,5 +1,7 @@
-{"query":"Summarize: Why do we use indexes in databases?","context":""}
-{"query":"You are a travel agent. Plan a 1-day itinerary in Kyoto focused on temples.","context":""}
-{"query":"Extract the company names from: 'Apple acquired Beats and partnered with IBM.'","context":""}
-{"query":"Explain like I’m five: how does DNS work?","context":""}
-{"query":"Given a CSV with columns name, email, role — outline a validation checklist.","context":""}
+{"query":"Draft a safe, concise radio check-in script for a SAR field team starting a shift. Keep it professional and clear.","context":""}
+{"query":"You’re the planning chief. Create a 6-item checklist for a UAS (drone) pre-flight before a grid search over mixed terrain.","context":""}
+{"query":"Extract any latitude/longitude coordinates from this: 'Team Alpha last reported at 37.7932 N, 122.3940 W near Pier 14.' Return JSON with keys lat and lon.","context":""}
+{"query":"Given wind NW 15 kt, light rain, temps 48–52°F, draft a short safety brief for ground teams operating near coastal cliffs.","context":""}
+{"query":"Make a simple ICS-style tasking note: assignment for Team Bravo to sweep Sectors C1–C3 on foot for 2 hours, check culverts, report findings by radio.","context":""}
+{"query":"Summarize hazards from this NWS note in one paragraph: Strong onshore winds 15–25 mph with gusts to 35 this afternoon. Brief heavy showers. Small hail possible in isolated cells.","context":"NWS: Strong onshore winds 15–25 mph with gusts to 35 this afternoon. Brief heavy showers. Small hail possible in isolated cells."}
+
