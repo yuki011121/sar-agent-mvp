@@ -27,7 +27,9 @@ jobs:
           API_VERSION: v1
           AGENT_BEARER_TOKEN: ${{ secrets.AGENT_BEARER_TOKEN }}
         run: |
-          python -m eval.smoke_test --dataset eval/golden.jsonl --limit 5
+          python -m eval.smoke_test --dataset eval/golden.jsonl --limit 5 \
+            --min_chars 40 --latency_warn_ms 15000 --max_slow 2
+
 
       - name: Upload artifacts
         if: always()
