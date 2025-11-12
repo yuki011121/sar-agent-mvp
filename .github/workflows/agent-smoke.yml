@@ -1,4 +1,4 @@
-nname: Agent Smoke Test
+name: Agent Smoke Test
 
 on:
   pull_request:
