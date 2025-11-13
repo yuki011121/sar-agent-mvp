@@ -2,6 +2,8 @@
 import os
 import time
 import requests
+import importlib, json, pathlib, sys
+
 
 MODE = os.getenv("AGENT_MODE", "http_json")  # "http_json" | "echo" | "azure_agents"
 
@@ -146,6 +148,44 @@ def call_agent(prompt: str, context: str | None = None, session: requests.Sessio
                             if isinstance(t, str):
                                 return t
         return ""
+    
+    if MODE == "local_python":
+        # Call a Python function in your repository directly (no HTTP, no Azure).
+        # Set LOCAL_HANDLER like "agents.weather:run" (module_path:function_name).
+        handler_spec = os.getenv("LOCAL_HANDLER", "agents.weather:run")
+
+        # Ensure repo root is on sys.path so "agents.*" can be imported
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+
+        try:
+            module_path, func_name = handler_spec.split(":")
+        except ValueError:
+            raise RuntimeError(f"LOCAL_HANDLER must look like 'package.module:function', got {handler_spec!r}")
+
+        try:
+            mod = importlib.import_module(module_path)
+        except Exception as e:
+            raise RuntimeError(f"Could not import module {module_path!r}: {e}") from e
+
+        fn = getattr(mod, func_name, None)
+        if not callable(fn):
+            raise RuntimeError(f"Function {func_name!r} not found/callable in module {module_path!r}")
+
+        # Call your function. Expected signature: fn(prompt: str, context: str|None) -> str|dict
+        result = fn(prompt, context)
+
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            for k in ("output", "response", "answer", "text"):
+                if k in result:
+                    return str(result[k])
+            return json.dumps(result, ensure_ascii=False)
+        return str(result)
+
+
 
     raise RuntimeError(f"Unknown AGENT_MODE={MODE}")
 
