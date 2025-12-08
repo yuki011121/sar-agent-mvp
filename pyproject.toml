@@ -13,6 +13,7 @@ pyautogen = "^0.9"
 ultralytics = "^8.1.0"
 pillow = "^10.0.0"
 deepface = "^0.0.84"
+tf-keras = "^2.20.0"
 # face-recognition = "^1.3.0"  # Commented out due to dlib compilation issues
 opencv-python = "^4.8.0"
 numpy = "^2.1.0"
