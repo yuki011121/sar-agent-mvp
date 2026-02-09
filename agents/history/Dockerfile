@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    openai \
+    google-genai \
     redis \
     python-dotenv \
     qdrant-client \
