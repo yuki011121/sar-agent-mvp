@@ -18,6 +18,7 @@ load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 #REST api port for qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
@@ -47,7 +48,8 @@ if QDRANT_COLLECTION is None:
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
 try:
-    client_Qdrant = QdrantClient(url=QDRANT_URL)
+    client_Qdrant = QdrantClient(url=QDRANT_URL,
+                                 api_key=QDRANT_API_KEY)
     logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
 except ApiException as e:
     logging.critical(f"Exception when calling QdrantClient: {e}")
