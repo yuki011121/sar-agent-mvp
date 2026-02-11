@@ -7,16 +7,26 @@ RUN apt-get update && apt-get install -y \
     git \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
-
+    
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     google-genai \
     redis \
     python-dotenv \
     qdrant-client \
-    sentence-transformers \
     joblib \
     scikit-learn
+
+# Next two layers help install the sentence-transformers package (CPU version)
+# Makes the image significantly smaller (by ~10GB)    
+RUN pip install --no-cache-dir torch \
+    torchvision \
+    torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# sentence transformers installation to help avoid cuda download
+RUN python -m pip install --no-cache-dir \
+    --upgrade --upgrade-strategy only-if-needed \
+    sentence-transformers
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
