@@ -14,7 +14,9 @@ After the summaries are generated, the summaries are concatenated with any addit
 
 Next the summaries, context from Qdrant, and additional info (from the "additional" option) are passed back to the LLM to generate actions that can lead to finding the missing person in the query incident.
 
-
+### Agent updates
+#### 2/10/26
+The agent has switched from using OpenAI to Gemini. The Gemini api has matured and the same functionality can be achieved using it, and they offer a free tier :). This will require you to have new enviorment variables, check the relevant secition.
 
 ## DockerFile
 The docker file assumes that the build context is the SAR-AGENT-MVP directory
@@ -48,6 +50,10 @@ Not al properties need to be included. The "filter' and "additional" properties 
 
 
 ## Qdrant Usage
+
+### Qdrant update
+The qudrant deployment now includes the usage of api keys. It has a admin and a read only api key. The history agent only requires the read only key. However inserting into Qdrant requires the admin api key. The environment varaible name for the Qdrant api key is ``QDRANT_API_KEY``. This does not include encryption, but it might be fine if this vector DB only run locally.
+
 ### Past Incidents collection
 The history agent assumes that the past incidents are in a Qdrant collection called "ISRID_collection". A script called isrid_parsing.py is included that can be ran and will automatically create and populate the collection provided a cleaned version of the ISRID dataset is given with the following headeer ",Data.Source,Incident.Outcome,Terrain,Subject.Category,Subject.Activity,Age,Sex,Subject.Status". An example of the payload associated to a point in the database is shown below.
 ````json
@@ -88,11 +94,14 @@ The ``qdrant`` directory includes the docker compose file that was used to creat
 Note that qdrant by default does not enable security. Currently a local Qdrant instant is used. A starter but incomplete security configuration is included with the ``config.yaml`` file. For information on the config file go [here](https://qdrant.tech/documentation/guides/configuration/). The config file should be included as a volume in the ``docker-comose.yaml`` file. For information about security go [here](https://qdrant.tech/documentation/guides/security/) 
 
 ## .env
-- OPENAI_KEY
-    - Needed for OpenAI api
+- GOOGLE_API_KEY
+    - Needed for Gemini api
     - <b>Required</b>
 - QDRANT_COLLECTION
     - Needed to query collection in qdrant vector DB for SAR context
+    - <b>Required</b>
+- QDRANT_API_KEY
+    - Needed for reading
     - <b>Required</b>
 - REDIS_URL
     - URL to connect to Redis
