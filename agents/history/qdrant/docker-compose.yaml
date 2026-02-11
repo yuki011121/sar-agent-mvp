@@ -4,6 +4,9 @@ services:
     ports:
       - "6333:6333"
       - "6334:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_ADMIN_KEY}
+      QDRANT__SERVICE__READ_ONLY_API_KEY: ${QDRANT_API_READONLY_KEY}
     volumes:
       - qdrant_storage:/qdrant/storage:z
 
