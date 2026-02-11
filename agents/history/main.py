@@ -38,7 +38,7 @@ logging.basicConfig(
 
 
 if GOOGLE_API_KEY is None:
-    logging.info("Couldn't find a api key for OPENAI")
+    logging.info("Couldn't find a api key for google api")
     exit(1)
 
 if QDRANT_COLLECTION is None:
