@@ -4,8 +4,14 @@ from xmlrpc import client
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from qdrant_client.models import PointStruct
+import os
+from dotenv import load_dotenv
 
-client = QdrantClient(url="http://localhost:6333")
+load_dotenv()
+
+QDRANT_API_ADMIN_KEY = os.getenv("QDRANT_API_ADMIN_KEY", None)
+client = QdrantClient(url="http://localhost:6333",
+                      api_key=QDRANT_API_ADMIN_KEY)
 COLLECTION_NAME = "SAR_collection"
 VECTOR_SIZE = 384  # vector size for model all-MiniLM-L6-v2
 EXTRACTED_FILE_PATHS = [
