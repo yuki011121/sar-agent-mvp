@@ -1,6 +1,6 @@
 import logging
 import os
-import openai
+from google import genai
 from dotenv import load_dotenv
 # import required module
 from qdrant_client import QdrantClient
@@ -18,12 +18,13 @@ load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 #REST api port for qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", None)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", None)
 AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
 AGENT_VERSION = "3.0.0"
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", None)
 TOP_K_MATCHES = 3
 QDRANT_TOP_K = 2
 QDRANT_ISRID_COLLECTION = "ISRID_collection"
@@ -36,18 +37,19 @@ logging.basicConfig(
 )
 
 
-if OPENAI_KEY is None:
-    logging.info("Couldn't find a api key for OPENAI")
+if GOOGLE_API_KEY is None:
+    logging.info("Couldn't find a api key for google api")
     exit(1)
 
 if QDRANT_COLLECTION is None:
     logging.info("Couldn't find a collection name for QDRANT")
     exit(1)
 
-client = openai.OpenAI(api_key=OPENAI_KEY)
+client_gemini = genai.Client(api_key=GOOGLE_API_KEY)
 
 try:
-    client_Qdrant = QdrantClient(url=QDRANT_URL)
+    client_Qdrant = QdrantClient(url=QDRANT_URL,
+                                 api_key=QDRANT_API_KEY)
     logging.info(f"Successfully connected to Qdrant at {QDRANT_URL}")
 except ApiException as e:
     logging.critical(f"Exception when calling QdrantClient: {e}")
@@ -126,11 +128,9 @@ def find_match(queryJSON: dict) -> list[dict]:
     return formatted_matches
 
 
-def verify_llm_response(response):
-    if hasattr(response, "error") and response.error is not None:
-        code = getattr(response.error, "code", "unknown")
-        message = getattr(response.error, "message", "No message provided")
-        raise Exception(f"Model error\nCode: {code}\nMessage: {message}")
+def verify_llm_response(status: str) -> None:
+    if status != "completed":
+        raise Exception(f"Couldn't evaluate llm_resonse due to it being in a non-completed state. LLM response state: {status}")
 
 
 def clean_llm_output(text: str) -> str:
@@ -188,12 +188,14 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
         "You are a Search and Rescue expert. "
         "You have been asked to analyze a set of past incidents that were retrieved because they are similar to a specific search and rescue query. "
         "Your task is to summarize the matched incidents and highlight how they relate to the original query."
+        "In the summary make sure you point out anything that seems significant like age or health conditions"
     )
 
     user_instructions = (
         "Task: Summarize the following search and rescue incidents and explain how they relate to the provided query.\n\n"
 
-        "Input Format:\n"
+        "<context>\n"
+        "<input_format>\n"
         "- The matching incidents are a list of python dictionaries converted to JSON. Each dictionary is a separate SAR incident\n"
         "- Each key in the incident dictionary is a relevant piece of information about the incident.\n\n"
         "- Note; that some key-value pairs may be abbreviated (e.g., data source)\n"
@@ -203,36 +205,31 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
         "{'Data.Source': 'nz', 'Incident.Outcome': 'search', 'Terrain': 'mountainous', 'Subject.Category': 'dementia', 'Subject.Activity': 'walkaway', 'Age': '67', 'Sex': 'f', 'Subject.Status': 'well'}"
         
         "Note: Some column values (e.g., data source) may be abbreviated.\n\n"
+        "</input_format>\n"
 
         f"Query Used:\n{str(query)}\n\n"
-        f"Matching Incidents:\n{str(matches)}\n\n"
+        f"Matching Incidents:\n{str(matches)}\n"
+        "</context>\n\n"
+        
 
-        "Guidelines:\n"
+        "<guidelines>\n"
         "- Provide a clear and concise summary of the incidents.\n"
         "- Highlight patterns that are relevant to the query (e.g., terrain, timing, outcome).\n"
         "- Mention any trends or correlations between the incidents and the query.\n"
         "- Do **not** include the incident ID in your summary.\n"
+        "</guidelines>"
         )
 
-    response = client.responses.create(
-        model="gpt-4.1-nano",
-        input=[
-            {
-                "role": "developer",
-                "content": dev_instructions
-            },
-            {
-                "role": "user",
-                "content": user_instructions
-            }
-        ],
-        max_output_tokens = 300,
-        previous_response_id = None
+    interaction1 = client_gemini.interactions.create(
+        model="gemini-2.5-flash",
+        system_instruction=dev_instructions,
+        input=user_instructions
     )
+    
+    verify_llm_response(interaction1.status)
+    prev_interactions_response = interaction1.outputs[-1].text
 
-    verify_llm_response(response)
-
-    summary = clean_llm_output(response.output[0].content[0].text)
+    summary = clean_llm_output(prev_interactions_response)
 
     qdrant_context_embedding = sentence_transformer.encode(summary + 
                                                            f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
@@ -249,15 +246,18 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
 
 
     user_instructions = (
-        f"Task: Based on the previous summaries and the following search query, give {NUMBER_OF_TIPS} concise and practical "
-        "recommendations for conducting a search to locate the missing person.\n\n"
+        f"<task>\n Based on the previous summaries and the following search query, give {NUMBER_OF_TIPS} concise and practical "
+        "recommendations for conducting a search to locate the missing person. \n</task>\n\n"
 
-        "Guidelines:\n"
+        "<guidelines>\n Guidelines:\n"
         "- Tailor each tip to the specific query details (terrain, subject profile, etc.).\n"
         "- Include reasoning for each recommendation.\n"
         "- Be specific and actionable.\n\n"
 
-        "Additional search and rescue (SAR) Context:\n"
+        "Additional Output Guidelines:\n"
+        "- include attribution at the end of the tips section as mentioned in the additional context. \n</guidelines>\n\n"
+
+        "<RAG_context>\n Additional search and rescue (SAR) Context:\n"
         "- This is SAR information that may be useful to consider when generating recommendations\n"
         "- the format of this is a list of dictionaries\n"
         "- Each dictionary is in the format {'provenance': {'source': '', 'author': ''}, 'content': 'relevant information'}\n"
@@ -266,33 +266,20 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
 
         "Additional Incident Information\n"
         "- Any information in this section is known additional information about the incident\n"
-        f"- {incident_Info}"
-
-        "Additional Output Guidelines:\n"
-        "- include attribution at the end of the tips section as mentioned in the additional context\n"
-
+        f"- {incident_Info} \n<RAG_context>"
+    )
+    
+    interaction2 = client_gemini.interactions.create(
+        model="gemini-2.5-flash",
+        system_instruction=dev_instructions,
+        input=user_instructions,
+        previous_interaction_id=interaction1.id
     )
 
-    response = client.responses.create(
-        model="gpt-4.1-nano",
-        input=[
-            {
-                "role": "developer",
-                "content": dev_instructions
-            },
-            {
-                "role": "user",
-                "content": user_instructions
-            }
-        ],
-        max_output_tokens = 520,
-        previous_response_id = response.id
-    )
+    verify_llm_response(interaction2.status)
 
-    verify_llm_response(response)
-
-    actions = clean_llm_output(response.output[0].content[0].text)
-
+    actions = clean_llm_output(interaction2.outputs[-1].text)
+    # print(f"token usage for interaction1: {interaction1.usage.to_dict()}\n token usage for interaction2: {interaction2.usage.to_dict()}")
     # print(f"Summary: {summary} \n\n\n Actions: {actions}")
     return summary, actions
 
