@@ -49,6 +49,7 @@ def compute_paths_payload() -> Dict[str, Any]:
 
     logger.info("Adding Tobler hiking time and custom edge costs...")
     G = add_tobler_time(G)
+    G = add_probability_cost(G)
     G = add_custom_edge_costs(G)
 
     logger.info("Tagging graph with SAR-relevant POIs...")

@@ -5,6 +5,8 @@ from rasterio.transform import rowcol
 from rasterio.plot import show
 import pandas as pd
 from pyproj import Transformer
+from behavior_profiles import BEHAVIOR_PROFILES, DEFAULT_PROFILE
+
 
 # Download walkable OSM graph using bounding box (based on DEM bounds)
 def load_osm_graph_from_bounds(north, south, east, west, network_type='all'):
@@ -59,6 +61,38 @@ def add_tobler_time(G):
         data["time_min"] = time_min
     return G
 
+#each profile has an added cost based on the behavior
+def add_behavior_costs(G, subject_category: str):
+    category = subject_category.strip().lower()
+    profile = BEHAVIOR_PROFILES.get(category, DEFAULT_PROFILE)
+
+    for u, v, k, data in G.edges(keys=True, data=True):
+        base_cost = data.get("cost", 1.0)
+        multiplier = 1.0
+
+        grade = data.get("grade", 0.0) or 0.0
+        multiplier *= (1 - profile["downhill_bias"] * abs(grade)) if grade < 0 else (1 + profile["elevation_penalty"] * grade)
+
+        highway = data.get("highway", "")
+        if highway in ["footway", "path", "track", "bridleway"]:
+            multiplier *= profile["trail_attraction"]
+        elif highway in ["residential", "unclassified", "tertiary", "secondary", "primary"]:
+            multiplier *= profile["road_attraction"]
+        elif not highway:
+            multiplier *= profile["brush_penalty"]
+
+        surface = data.get("surface", "")
+        if surface in ["paved", "asphalt", "concrete"]:
+            multiplier *= 0.85
+        elif surface in ["grass", "ground", "dirt"]:
+            multiplier *= 1.20
+        elif surface in ["mud", "sand"]:
+            multiplier *= 1.50
+
+        data["cost"] = base_cost * max(0.1, min(multiplier, 10.0))
+
+    return G
+
 # Add a composite "cost" to each edge using length and slope
 def add_custom_edge_costs(G):
     for u, v, k, data in G.edges(keys=True, data=True):
@@ -75,6 +109,8 @@ def add_custom_edge_costs(G):
         cost = max(0.001, cost) 
         data["cost"] = float(cost)
     return G
+
+# def add_probability_cost(G):
 
 # Query SAR-relevant POIs and attach them to the nearest graph nodes with metadata
 def add_pois_to_graph(G, crs, bounds):
