@@ -1,0 +1,27 @@
+{
+"type": "FeatureCollection",
+"name": "dementia_search_map",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "node_id": 3804137130, "x": -120.5963833, "y": 35.2189328, "visit_prob": 0.729, "endpoint_prob": 0.105, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824306248209, 0.000317652317057 ] } },
+{ "type": "Feature", "properties": { "node_id": 91359115, "x": -120.5933027, "y": 35.2155001, "visit_prob": 0.518, "endpoint_prob": 0.009, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824278649152, 0.000317621356304 ] } },
+{ "type": "Feature", "properties": { "node_id": 91060432, "x": -120.5948799, "y": 35.2167701, "visit_prob": 0.988, "endpoint_prob": 0.041, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824292779275, 0.000317632810888 ] } },
+{ "type": "Feature", "properties": { "node_id": 91060433, "x": -120.5948443, "y": 35.2170274, "visit_prob": 1.0, "endpoint_prob": 0.058, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824292460327, 0.00031763513157 ] } },
+{ "type": "Feature", "properties": { "node_id": 3804137075, "x": -120.5992124, "y": 35.216818, "visit_prob": 0.653, "endpoint_prob": 0.064, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824331594065, 0.000317633242899 ] } },
+{ "type": "Feature", "properties": { "node_id": 2383589812, "x": -120.5954383, "y": 35.2176631, "visit_prob": 1.0, "endpoint_prob": 0.098, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824297781951, 0.000317640865177 ] } },
+{ "type": "Feature", "properties": { "node_id": 12487448437, "x": -120.5939312, "y": 35.2185516, "visit_prob": 1.0, "endpoint_prob": 0.073, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824284279891, 0.000317648878886 ] } },
+{ "type": "Feature", "properties": { "node_id": 3804137076, "x": -120.5957051, "y": 35.2168763, "visit_prob": 0.721, "endpoint_prob": 0.024, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824300172231, 0.000317633768741 ] } },
+{ "type": "Feature", "properties": { "node_id": 3804137081, "x": -120.5953802, "y": 35.2171433, "visit_prob": 0.868, "endpoint_prob": 0.082, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824297261436, 0.000317636176912 ] } },
+{ "type": "Feature", "properties": { "node_id": 3804137082, "x": -120.5960582, "y": 35.2172392, "visit_prob": 0.734, "endpoint_prob": 0.03, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824303335638, 0.000317637041867 ] } },
+{ "type": "Feature", "properties": { "node_id": 2383589819, "x": -120.5942247, "y": 35.2181405, "visit_prob": 1.0, "endpoint_prob": 0.142, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824286909339, 0.000317645171025 ] } },
+{ "type": "Feature", "properties": { "node_id": 3804137086, "x": -120.5956797, "y": 35.2174168, "visit_prob": 0.799, "endpoint_prob": 0.143, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824299944658, 0.000317638643707 ] } },
+{ "type": "Feature", "properties": { "node_id": 2220867626, "x": -120.5886818, "y": 35.203304, "visit_prob": 0.147, "endpoint_prob": 0.046, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824237250531, 0.000317511355277 ] } },
+{ "type": "Feature", "properties": { "node_id": 2220867632, "x": -120.5897259, "y": 35.2043781, "visit_prob": 0.166, "endpoint_prob": 0.017, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824246604613, 0.00031752104297 ] } },
+{ "type": "Feature", "properties": { "node_id": 2220867635, "x": -120.5874792, "y": 35.2043933, "visit_prob": 0.143, "endpoint_prob": 0.022, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824226476458, 0.000317521180073 ] } },
+{ "type": "Feature", "properties": { "node_id": 91711612, "x": -120.5851124, "y": 35.2091147, "visit_prob": 0.217, "endpoint_prob": 0.016, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824205272356, 0.0003175637641 ] } },
+{ "type": "Feature", "properties": { "node_id": 91233213, "x": -120.5881883, "y": 35.2114722, "visit_prob": 0.257, "endpoint_prob": 0.005, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824232829292, 0.000317585027235 ] } },
+{ "type": "Feature", "properties": { "node_id": 2220867615, "x": -120.5878894, "y": 35.2025575, "visit_prob": 0.141, "endpoint_prob": 0.019, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824230151427, 0.000317504622326 ] } },
+{ "type": "Feature", "properties": { "node_id": 4638218448, "x": -120.5838056, "y": 35.2085348, "visit_prob": 0.169, "endpoint_prob": 0.002, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.489824193564772, 0.000317558533777 ] } },
+{ "type": "Feature", "properties": { "node_id": 2220867622, "x": -120.5919073, "y": 35.2028927, "visit_prob": 0.12, "endpoint_prob": 0.004, "elevation": 0.0 }, "geometry": { "type": "Point", "coordinates": [ -127.48982426614775, 0.000317507645601 ] } }
+]
+}
