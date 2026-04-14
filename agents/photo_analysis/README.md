@@ -1,15 +1,16 @@
 # Photo Analysis Agent
 
-This agent uses YOLOv8 (Ultralytics) to perform object detection on images and publishes the results to a Redis stream. **ENHANCED: Now includes advanced person analysis with skin detection, improved color accuracy, and comprehensive SAR-specific metadata!**
+This agent uses YOLOv8 (Ultralytics) to perform object detection on images and publishes the results to a Redis stream. Now includes advanced person analysis with skin detection, improved color accuracy, face recognition with DeepFace, and comprehensive SAR-specific metadata!**
 
 ## What It Does
 - Monitors a folder for new images (default: `input_images`)
 - Runs object detection using a YOLOv8 model (default: `yolov8m.pt`)
-- **For detected persons:** Analyzes hair color, clothing color, and gender using advanced computer vision
+- **For detected persons:** Analyzes hair color and clothing color using advanced computer vision
 - **For detected persons:** Uses skin detection to accurately separate hair and clothing regions
 - **For detected persons:** Employs k-means clustering for precise color analysis
-- **SAR Intelligence:** Calculates search priority, detects emergency equipment, assesses accessibility
-- **Emergency Response:** Determines urgency levels and response time estimates
+- **Face Recognition:** Detects faces and generates face encodings for person re-identification using DeepFace
+- **SAR Intelligence:** Calculates search priority and assesses accessibility
+- **Emergency Response:** Determines urgency levels
 - Prints detection results to the console
 - Publishes results to a Redis stream (`photo.analysis.raw` by default)
 
@@ -49,44 +50,33 @@ The agent now includes sophisticated analysis for person detection:
 - **Common colors** - red, blue, green, yellow, black, white, gray, orange, purple
 - **Pattern handling** - Better with complex clothing patterns
 
-### Person Counting & Face Analysis
+### Person Counting
 - **Total people count** - Number of persons detected in image
-- **Face detection** - Number of faces found and their encodings
 - **Person IDs** - Unique identifier for each person
+
+### Face Recognition & Encoding
+- **DeepFace Integration** - Uses DeepFace library for face detection and encoding
+- **Face Detection** - Automatically detects faces within person bounding boxes
+- **Face Encodings** - Generates unique face embeddings for person re-identification
+- **Face Quality Analysis** - Assesses blur, brightness, and occlusion
+- **Person Re-identification** - Face encodings enable tracking the same person across multiple images
+- **Multiple Models** - Supports various DeepFace models (VGG-Face, Facenet, OpenFace, etc.)
+- **Graceful Degradation** - Continues operation even if face recognition fails
 
 ## SAR-Specific Intelligence Features
 
 ### Search Priority Calculation
 The agent automatically calculates search priority based on SAR-relevant factors:
 
-- **CRITICAL** (150+ points): People + emergency equipment + water bodies
-- **HIGH** (100-149 points): People or multiple emergency items
-- **MEDIUM** (50-99 points): Vehicles or some equipment
+- **CRITICAL** (150+ points): People + water bodies + vehicles
+- **HIGH** (100-149 points): People detected
+- **MEDIUM** (50-99 points): Vehicles or water bodies
 - **LOW** (<50 points): No urgent items detected
 
 **Scoring System:**
 - People detected: +100 points each
-- Emergency equipment: +50 points each
 - Vehicles/boats: +30 points each
 - Water bodies: +40 points
-
-### Emergency Equipment Detection
-Automatically identifies SAR-relevant equipment:
-
-**Life-Saving Equipment:**
-- Life jackets, life vests, life rings
-- Flares, emergency signals
-- Radios, communication devices
-
-**Medical Equipment:**
-- First aid supplies
-- Medical equipment
-- Emergency medical gear
-
-**Safety Equipment:**
-- Helmets, safety gear
-- Rescue equipment
-- Emergency supplies
 
 ### Accessibility Assessment
 Evaluates terrain accessibility for SAR operations:
@@ -107,14 +97,13 @@ Evaluates terrain accessibility for SAR operations:
 Determines appropriate response urgency:
 
 **Urgency Levels:**
-- **IMMEDIATE**: 3+ urgency factors (people + equipment + water + night)
+- **IMMEDIATE**: 3+ urgency factors (people + water + night)
 - **HIGH**: 2 urgency factors
 - **MEDIUM**: 1 urgency factor
 - **LOW**: No urgency factors
 
 **Urgency Factors:**
 - People detected
-- Emergency equipment present
 - Water bodies detected
 - Night time conditions
 - Weather conditions
@@ -132,77 +121,155 @@ Assesses environmental conditions affecting SAR operations:
 - Seasonal considerations
 - Lighting impact on search effectiveness
 
-### Response Time Estimation
-Automatically suggests appropriate response times:
 
-- **IMMEDIATE**: Requires immediate response
-- **WITHIN_1_HOUR**: High priority, respond within 1 hour
-- **WITHIN_4_HOURS**: Medium priority, respond within 4 hours
-- **ROUTINE**: Low priority, routine response
+## Output Modes
 
-## Example Output for Person Detection
+The agent supports two output modes:
+
+### Compact Mode (Default)
+Optimized for production use with minimal noise and focused on SAR-relevant information.
+
+### Full Mode  
+Verbose output with all debugging information and detailed metadata.
+
+## Example Output Format
+
+### Compact Mode (Default)
 ```json
 {
-  "class": "person",
-  "confidence": 0.95,
-  "bbox": [100, 200, 300, 500],
-  "hair_color": "brown",
-  "clothing_color": "blue",
-  "gender": "unknown",
-  "person_id": 1
+  "version": "1.0",
+  "timestamp": "2025-01-24T02:59:31Z",
+  "stream": "photo.analysis.raw",
+  "image": {
+    "id": "img_4092e67d",
+    "filename": "woman1.png",
+    "original_size": { "w": 612, "h": 408 },
+    "model_input_size": { "w": 448, "h": 640 },
+    "geo": { "lat": 35.305, "lon": -120.6625 }
+  },
+  "processing": {
+    "agent": "photo-analysis",
+    "runtime_ms": 229,
+    "capabilities": { "object_detection": true, "color_analysis": true, "face_encoding": true, "sar_assessment": true }
+  },
+  "detections": [
+    {
+      "id": "det_1",
+      "type": "person",
+      "confidence": 0.958,
+      "bbox": { "x": 162, "y": 16, "w": 264, "h": 389 },
+      "attributes": {
+        "appearance": { "hair_color": "white", "clothing_colors": ["yellow"] },
+        "face": {
+          "present": true,
+          "encoding_id": "face_a3f2b1c4",
+          "quality": { "blur_score": 0.85, "brightness": 0.72, "occlusion": false, "quality_score": 0.785 }
+        }
+      }
+    }
+  ],
+  "aggregates": { "counts": { "person": 1 } },
+  "sar_assessment": {
+    "priority": { "label": "HIGH", "score": 0.80 },
+    "urgency": "MEDIUM",
+    "accessibility": { "terrain": "LOW_COMPLEXITY", "vehicle_access": "LIMITED" },
+    "weather": { "visibility_m": 2000, "lighting": "LOW", "conditions": ["overcast"] },
+    "risk_factors": [
+      { "name": "low_visibility", "weight": 0.25, "contrib": 0.25 }
+    ],
+    "explanation": "1 person detected; low visibility."
+  }
 }
 ```
 
-### Complete Analysis Output with SAR Context
+### Full Mode
+The agent produces a structured JSON output with the following format:
+
 ```json
 {
-  "metadata": {
+  "version": "1.0",
+  "timestamp": "2025-01-23T19:12:04Z",
+  "stream": "photo.analysis.raw",
+
+  "image": {
+    "id": "img_17392",
+    "filename": "frame_00123.jpg",
+    "width": 1920,
+    "height": 1080,
+    "source": "uav_camera_1",
+    "capture_time": "2025-01-23T19:11:59Z",
+    "geo": { "lat": 35.3050, "lon": -120.6625 }
+  },
+
+  "processing": {
+    "agent": "photo-analysis",
+    "runtime_ms": 142,
+    "models": {
+      "yolov8": "v8m-2024.01",
+      "opencv": "4.8.0"
+    },
     "capabilities": {
       "object_detection": true,
       "color_analysis": true,
-      "person_counting": true,
-      "face_analysis": true,
-      "skin_detection": true,
-      "sar_analysis": true
-    }
+      "face_encoding": true,
+      "sar_assessment": true
+    },
+    "errors": []
   },
-  "detections": [...],
-  "person_analysis": {
-    "total_people": 3,
-    "faces_detected": 2,
-    "face_encodings": [...]
-  },
-  "sar_context": {
-    "search_priority": "CRITICAL",
-    "emergency_equipment": [
-      {
-        "type": "life jacket",
-        "confidence": 0.85,
-        "bbox": [150, 200, 250, 300],
-        "priority": "HIGH"
+
+  "detections": [
+    {
+      "id": "det_1",
+      "type": "person",
+      "confidence": 0.95,
+      "bbox": { "x": 100, "y": 200, "w": 200, "h": 300 },
+      "attributes": {
+        "appearance": {
+          "hair_color": "brown",
+          "clothing_colors": ["blue"]
+        },
+        "face": {
+          "present": true,
+          "encoding_id": "face_a3f2b1c4",
+          "encoding": [0.123, -0.456, 0.789, ...],  // Full face embedding vector (4096 dims for VGG-Face)
+          "quality": {
+            "blur_score": 0.85,
+            "brightness": 0.72,
+            "occlusion": false,
+            "quality_score": 0.785
+          },
+          "bbox": [120, 210, 180, 270]
+        },
+        "equipment": []
       }
-    ],
-    "accessibility": {
-      "score": 60,
-      "level": "MODERATE",
-      "obstacles": 2,
-      "water_present": true,
-      "vehicle_access": false
-    },
-    "urgency_level": "IMMEDIATE",
-    "weather_conditions": {
-      "visibility": "GOOD",
-      "lighting": "DAY",
-      "weather_conditions": "CLEAR"
-    },
-    "response_time_estimate": "IMMEDIATE",
-    "sar_metrics": {
-      "people_count": 2,
-      "faces_detected": 1,
-      "equipment_count": 1,
-      "vehicle_count": 0,
-      "terrain_complexity": "HIGH"
     }
+  ],
+
+  "aggregates": {
+    "counts": { "person": 3, "vehicle": 0, "boat": 0 },
+    "class_confidence_avg": { "person": 0.92 }
+  },
+
+  "sar_assessment": {
+    "priority": { "label": "CRITICAL", "score": 0.95 },
+    "urgency": "IMMEDIATE",
+    "accessibility": {
+      "terrain": "HIGH_COMPLEXITY",
+      "vehicle_access": "LIMITED",
+      "water_presence": true,
+      "obstacles": ["dense_vegetation"]
+    },
+    "weather": {
+      "visibility_m": 1800,
+      "lighting": "GOOD",
+      "conditions": ["clear"]
+    },
+    "equipment_detected": [],
+    "risk_factors": [
+      { "name": "multiple_persons", "weight": 0.4, "contrib": 0.32 },
+      { "name": "water_presence", "weight": 0.35, "contrib": 0.35 }
+    ],
+    "explanation": "3 person(s) detected; water presence."
   }
 }
 ```
@@ -287,15 +354,98 @@ The script will:
 | `UPDATE_INTERVAL_SECONDS` | How often to check for new images (sec) | 10                     |
 | `MAX_RETRIES`        | Number of retry attempts for connections   | 3                      |
 | `RETRY_DELAY`        | Seconds between retry attempts             | 5                      |
+| `OUTPUT_MODE`        | Output mode: compact or full                | compact                |
+| `INCLUDE_DEBUG`      | Include debug information (true/false)      | false                  |
+| `CONFIDENCE_THRESHOLD` | Minimum confidence for detections (0.0-1.0) | 0.50                   |
+| `CLASS_ALLOWLIST`    | Comma-separated list of allowed classes     | person,vehicle,boat,car,truck,motorcycle |
+| `ENABLE_FACE_RECOGNITION` | Enable face recognition (true/false)      | true                   |
+| `FACE_MODEL`         | DeepFace model name (VGG-Face, Facenet, etc.) | VGG-Face              |
 
-## Example Output
+## Face Recognition Usage
+
+### Basic Usage
+Face recognition is enabled by default. The agent will automatically:
+- Detect faces in person detections
+- Generate face encodings for re-identification
+- Analyze face quality (blur, brightness, occlusion)
+
+### Using Face Recognition with a Database
+To match faces against a database of known persons:
+
+1. **Create a database directory** with subdirectories for each person:
+   ```
+   face_database/
+   ├── person_1/
+   │   ├── photo1.jpg
+   │   └── photo2.jpg
+   ├── person_2/
+   │   └── photo1.jpg
+   └── ...
+   ```
+
+2. **Use the FaceRecognizer class** programmatically:
+   ```python
+   from agents.photo_analysis.face_recognition import FaceRecognizer
+   
+   recognizer = FaceRecognizer(model_name="VGG-Face")
+   result = recognizer.recognize_face(face_image, database_path="face_database")
+   ```
+
+3. **The result** will include:
+   - `identity`: Path to the matched person's directory
+   - `confidence`: Match confidence (0.0-1.0)
+   - `distance`: Distance metric (lower = better match)
+
+### Available DeepFace Models
+- **VGG-Face** (default): Good balance of accuracy and speed
+- **Facenet**: High accuracy, good for large databases
+- **OpenFace**: Fast, good for real-time applications
+- **DeepID**: Alternative high-accuracy model
+- **ArcFace**: State-of-the-art accuracy
+
+### Performance Notes
+- First run will download the model (can be large, ~500MB-1GB)
+- Face encoding adds ~100-300ms per person detection
+- Models are cached after first download
+- To disable face recognition: `export ENABLE_FACE_RECOGNITION=false`
+
+## Configuration Examples
+
+### Compact Mode (Production)
+```bash
+export OUTPUT_MODE="compact"
+export CONFIDENCE_THRESHOLD="0.50"
+export CLASS_ALLOWLIST="person,vehicle,boat"
+poetry run python -m agents.photo_analysis.main
+```
+
+### Full Mode (Debugging)
+```bash
+export OUTPUT_MODE="full"
+export INCLUDE_DEBUG="true"
+export CONFIDENCE_THRESHOLD="0.30"
+poetry run python -m agents.photo_analysis.main
+```
+
+### Custom Class Filtering
+```bash
+export CLASS_ALLOWLIST="person,car,truck"
+export CONFIDENCE_THRESHOLD="0.70"
+poetry run python -m agents.photo_analysis.main
+```
+
+## Example Console Output
 ```
 === Photo Analysis Output ===
 {
-  "metadata": { ... },
+  "version": "1.0",
+  "timestamp": "2025-01-23T19:12:04Z",
+  "stream": "photo.analysis.raw",
+  "image": { ... },
+  "processing": { ... },
   "detections": [ ... ],
-  "person_analysis": { ... },
-  "sar_context": { ... }
+  "aggregates": { ... },
+  "sar_assessment": { ... }
 }
 ============================
 ```
@@ -305,10 +455,8 @@ The script will:
 This enhanced agent provides critical intelligence for search and rescue operations:
 
 ✅ **Automatic Prioritization** - Ranks images by urgency and priority
-✅ **Resource Planning** - Suggests required equipment and vehicles
-✅ **Response Timing** - Estimates appropriate response times
+✅ **Resource Planning** - Suggests required vehicles and terrain access
 ✅ **Risk Assessment** - Evaluates terrain difficulty and accessibility
-✅ **Equipment Detection** - Identifies life-saving equipment automatically
 ✅ **Environmental Analysis** - Considers weather and lighting conditions
 ✅ **Emergency Intelligence** - Provides comprehensive SAR context for decision-making
 
