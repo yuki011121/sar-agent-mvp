@@ -1,0 +1,6 @@
+{"query":"Give a 3-sentence SAR weather advisory for a windy coastal hike. Make it practical and note this is a generic advisory (no live data).","context":""}
+{"query":"Conditions: gusty onshore winds 20–30 mph, periods of light rain, surf 6–8 ft. Provide a short SAR safety brief for beach/cliff operations (no live data).","context":""}
+{"query":"Explain hypothermia risk for teams in 45°F rain with 15 mph wind and poor visibility. Give 3 prevention tips.","context":""}
+{"query":"Mountain ops this afternoon: cumulus building, isolated thunderstorms possible after 1400 local. Write a concise lightning safety reminder for field teams.","context":""}
+{"query":"Draft a generic disclaimer I can paste before any advisory: that this agent does not fetch live weather, and teams must check NWS/NOAA before decisions.","context":""}
+{"query":"Given these inputs, tailor guidance: winds NW 15 kt, intermittent drizzle, temps 48–52°F, slippery rock. Keep it to 3–5 sentences.","context":"winds NW 15 kt, intermittent drizzle, temps 48–52°F, slippery rock"}

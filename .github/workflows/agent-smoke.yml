@@ -1,0 +1,46 @@
+name: Agent Smoke Test
+
+on:
+  pull_request:
+    branches: [ dev ]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install -r requirements-eval.txt
+
+      - name: Run smoke test (Azure agent)
+        env:
+          AGENT_MODE: azure_agents
+          PROJECT_ENDPOINT: ${{ secrets.PROJECT_ENDPOINT }}
+          AGENT_ID: ${{ secrets.AGENT_ID }}
+          API_VERSION: v1
+          AGENT_BEARER_TOKEN: ${{ secrets.AGENT_BEARER_TOKEN }}
+        run: |
+          python -m eval.smoke_test --dataset eval/golden.jsonl --limit 5 \
+            --min_chars 40 --latency_warn_ms 15000 --max_slow 2
+
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: eval/out/*
+
+      - name: Attach summary to job
+        if: always()
+        run: |
+          echo "## Smoke Test Summary" >> $GITHUB_STEP_SUMMARY
+          cat eval/out/summary_* >> $GITHUB_STEP_SUMMARY
+
