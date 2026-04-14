@@ -3,12 +3,11 @@ Redis client module for the photo analysis agent.
 Handles Redis connection and message publishing.
 """
 
-import os
 import time
 import json
 import logging
 import redis
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 

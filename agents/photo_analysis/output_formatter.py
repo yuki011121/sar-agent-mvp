@@ -219,7 +219,7 @@ class OutputFormatter:
                      sar_assessment: Dict[str, Any], 
                      runtime_ms: float,
                      model_input_size: Optional[Dict[str, int]] = None,
-                     errors: List[Dict[str, str]] = None) -> Dict[str, Any]:
+                     errors: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Create the complete structured output."""
         try:
             # Filter and clean detections

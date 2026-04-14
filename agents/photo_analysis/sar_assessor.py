@@ -33,7 +33,7 @@ class SARAssessor:
                 priority_score += 30 * len(vehicles)
             
             # Check for water bodies (high risk)
-            water_indicators = [d for d in detections if d.get("type") in ["boat", "person"]]
+            water_indicators = [d for d in detections if d.get("type") in ["boat", "water"]]
             if water_indicators:
                 priority_score += 40
             
@@ -278,7 +278,7 @@ class SARAssessor:
                 "weather": {
                     "visibility_m": visibility_mapping.get(weather.get("visibility", "UNKNOWN"), 1000),
                     "lighting": lighting_mapping.get(lighting, "UNKNOWN"),
-                    "conditions": ["overcast"] if weather.get("weather_conditions") == "UNKNOWN" else [weather.get("weather_conditions", "unknown")]
+                    "conditions": [] if weather.get("weather_conditions") == "UNKNOWN" else [weather.get("weather_conditions", "unknown")]
                 },
                 "equipment_detected": [],  # No emergency equipment detection
                 "risk_factors": risk_factors,
