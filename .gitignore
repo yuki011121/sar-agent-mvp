@@ -108,8 +108,6 @@ docs/
 data/isrid2searches_17Jan2023_AmandaBelden.csv
 data/isrid2searches4calpoly_output.csv
 
-# Root README (local only)
-README.md
 
 # Backup files
 *.bak
