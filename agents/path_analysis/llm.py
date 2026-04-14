@@ -13,7 +13,7 @@ if not api_key:
     raise ValueError("GOOGLE_API_KEY, GEMINI_API_KEY, or API_KEY not found. Make sure one is set in your .env file.")
 genai.configure(api_key=api_key)
 
-MODEL_NAME = os.getenv("GEN_TEXT_MODEL", "gemini-2.0-flash")
+MODEL_NAME = os.getenv("GEN_TEXT_MODEL", "gemini-2.5-flash")
 model = genai.GenerativeModel(MODEL_NAME)
 
 # Summarize one path: IDs, cost/time, elevation stats, and unique OSM tags.

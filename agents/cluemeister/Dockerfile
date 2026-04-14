@@ -9,11 +9,12 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    networkx \
-    numpy \
     openai \
     redis \
-    python-dotenv
+    python-dotenv \
+    neo4j \
+    plotly \
+    kaleido
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+"""
+SAR Command Agent - LangGraph Definition
+
+This module defines the state machine for the SAR command agent using LangGraph.
+The graph implements a Supervisor pattern where:
+1. Supervisor node decides which specialists to consult
+2. Specialist nodes gather data from their respective Redis streams
+3. Synthesizer node combines all analyses into a final response
+
+Architecture:
+    User Query → Supervisor → [Weather, Health, History, Photo, Path] → Synthesizer → Response
+"""
+
+import os
+import json
+import logging
+from typing import TypedDict, Annotated, Literal, Sequence, Optional, Dict, Any, List
+from datetime import datetime
+
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
+import uuid
+
+from .tools import (
+    ALL_TOOLS,
+    get_weather_data,
+    get_health_assessment,
+    get_history_cases,
+    get_photo_analysis,
+    get_path_analysis,
+    get_logistics_status,
+    get_interview_analysis,
+    get_cluemeister_analysis,
+)
+
+# Configuration
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+MODEL_NAME = os.getenv("COMMAND_AGENT_MODEL", "gemini-2.5-flash")
+TEMPERATURE = float(os.getenv("COMMAND_AGENT_TEMPERATURE", "0.7"))
+
+# Logger
+logger = logging.getLogger("command-agent-graph")
+
+
+# ============================================================================
+# State Definition
+# ============================================================================
+
+class SARState(TypedDict):
+    """
+    State for the SAR Command Agent graph.
+    
+    Attributes:
+        messages: Conversation history
+        query: Original user query
+        specialists_to_consult: List of specialists the supervisor wants to consult
+        weather_analysis: Analysis from weather specialist
+        health_analysis: Analysis from health specialist
+        history_analysis: Analysis from history specialist
+        photo_analysis: Analysis from photo specialist
+        path_analysis: Analysis from path specialist
+        final_response: Synthesized final response
+        iteration: Current iteration count (to prevent infinite loops)
+        
+        # Task dispatch tracking
+        pending_tasks: List of dispatched task IDs
+        task_results: Results from completed tasks
+        dispatched_to: Which agents have received tasks
+        use_dispatch_mode: Whether to use active task dispatch (vs passive read)
+    """
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    query: str
+    specialists_to_consult: list[str]
+    weather_analysis: Optional[str]
+    health_analysis: Optional[str]
+    history_analysis: Optional[str]
+    photo_analysis: Optional[str]
+    path_analysis: Optional[str]
+    final_response: Optional[str]
+    iteration: int
+    # Task dispatch fields
+    pending_tasks: Optional[List[str]]
+    task_results: Optional[Dict[str, Any]]
+    dispatched_to: Optional[List[str]]
+    use_dispatch_mode: Optional[bool]
+
+
+# ============================================================================
+# LLM Setup
+# ============================================================================
+
+def get_llm(with_tools: bool = False) -> ChatGoogleGenerativeAI:
+    """Create LLM instance using Google Gemini."""
+    llm = ChatGoogleGenerativeAI(
+        model=MODEL_NAME,
+        temperature=TEMPERATURE,
+        google_api_key=GOOGLE_API_KEY,
+    )
+    if with_tools:
+        return llm.bind_tools(ALL_TOOLS)
+    return llm
+
+
+# ============================================================================
+# System Prompts
+# ============================================================================
+
+SUPERVISOR_PROMPT = """You are the SAR (Search and Rescue) Command Center Supervisor.
+Your role is to analyze user queries about search and rescue operations and determine which specialists to consult.
+
+Available specialists:
+- weather: Weather conditions and their impact on search operations
+- health: Health risk assessment for missing persons
+- history: Historical SAR cases and patterns
+- photo: Photo/image analysis results
+- path: Terrain and path analysis
+
+Based on the user's query, decide which specialists would be most helpful.
+Return a JSON object with the following format:
+{
+    "reasoning": "Brief explanation of why you chose these specialists",
+    "specialists": ["specialist1", "specialist2", ...]
+}
+
+If the query is general or covers multiple areas, include all relevant specialists.
+If the query is specific (e.g., "what's the weather?"), only include the relevant specialist.
+Always include at least one specialist.
+"""
+
+SPECIALIST_PROMPTS = {
+    "weather": """You are a Weather Analysis Specialist for SAR operations.
+Analyze the weather data and explain how conditions affect search and rescue:
+- Temperature and exposure risks
+- Visibility and search effectiveness
+- Wind and terrain navigation
+- Precipitation and safety concerns
+Provide actionable recommendations for the search team.""",
+
+    "health": """You are a Health Assessment Specialist for SAR operations.
+Analyze health risk data and provide assessment:
+- Medical urgency based on subject's conditions
+- Time-critical factors
+- Survival probability considerations
+- Recommended medical preparations
+Provide clear risk levels and prioritization guidance.""",
+
+    "history": """You are a Historical Case Analyst for SAR operations.
+Analyze similar historical cases and extract insights:
+- Similar case outcomes and timelines
+- Effective search strategies from past cases
+- Common patterns and behaviors
+- Lessons learned and pitfalls to avoid
+Provide strategic recommendations based on historical data.""",
+
+    "photo": """You are a Photo Analysis Specialist for SAR operations.
+Analyze image detection results:
+- Identified objects and persons
+- Potential clue locations
+- Area coverage assessment
+- Recommendations for further imagery needs
+Highlight any findings that could aid the search.""",
+
+    "path": """You are a Terrain and Path Analysis Specialist for SAR operations.
+Analyze terrain and path data:
+- Terrain difficulty and accessibility
+- Recommended search routes
+- Hazard identification
+- Resource deployment by terrain type
+Provide route planning recommendations.""",
+}
+
+SYNTHESIZER_PROMPT = """You are the SAR Command Center Synthesizer.
+Your role is to combine analyses from multiple specialists into a coherent, actionable response.
+
+You have received the following analyses:
+{analyses}
+
+Based on all available information, provide a comprehensive response that:
+1. Summarizes the key findings from each specialist
+2. Identifies any conflicts or concerns across analyses
+3. Provides prioritized, actionable recommendations
+4. Highlights any urgent items requiring immediate attention
+
+Keep your response focused and practical for SAR operations.
+Address the user's original query directly while incorporating all relevant insights.
+
+User's original query: {query}
+"""
+
+
+# ============================================================================
+# Graph Nodes
+# ============================================================================
+
+def supervisor_node(state: SARState) -> SARState:
+    """
+    Supervisor node - decides which specialists to consult.
+    """
+    logger.info("Supervisor: Analyzing query...")
+    
+    llm = get_llm()
+    
+    messages = [
+        SystemMessage(content=SUPERVISOR_PROMPT),
+        HumanMessage(content=f"User query: {state['query']}")
+    ]
+    
+    response = llm.invoke(messages)
+    
+    try:
+        # Parse the JSON response
+        content = response.content
+        # Handle potential markdown code blocks
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0]
+        
+        result = json.loads(content.strip())
+        specialists = result.get("specialists", ["weather", "health", "history"])
+        reasoning = result.get("reasoning", "")
+        
+        logger.info(f"Supervisor: Consulting specialists: {specialists}")
+        logger.info(f"Supervisor: Reasoning: {reasoning}")
+        
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"Supervisor: Could not parse response, using defaults. Error: {e}")
+        specialists = ["weather", "health", "history"]
+    
+    return {
+        **state,
+        "specialists_to_consult": specialists,
+        "iteration": state.get("iteration", 0) + 1,
+    }
+
+
+def create_specialist_node(specialist_name: str):
+    """Factory function to create specialist nodes."""
+    
+    tool_map = {
+        "weather": get_weather_data,
+        "health": get_health_assessment,
+        "history": get_history_cases,
+        "photo": get_photo_analysis,
+        "path": get_path_analysis,
+    }
+    
+    analysis_key_map = {
+        "weather": "weather_analysis",
+        "health": "health_analysis",
+        "history": "history_analysis",
+        "photo": "photo_analysis",
+        "path": "path_analysis",
+    }
+    
+    def specialist_node(state: SARState) -> SARState:
+        """Specialist node - gathers and analyzes domain-specific data."""
+        
+        # Check if this specialist should be consulted
+        if specialist_name not in state.get("specialists_to_consult", []):
+            logger.info(f"{specialist_name.capitalize()}: Skipped (not requested)")
+            return state
+        
+        logger.info(f"{specialist_name.capitalize()}: Gathering data...")
+        
+        # Get the tool and fetch data
+        tool = tool_map.get(specialist_name)
+        if not tool:
+            logger.error(f"{specialist_name}: No tool found")
+            return state
+        
+        # Invoke the tool to get data
+        raw_data = tool.invoke({})
+        
+        # If no data, skip analysis
+        if "No data" in raw_data or "Error" in raw_data:
+            logger.warning(f"{specialist_name.capitalize()}: {raw_data}")
+            return {
+                **state,
+                analysis_key_map[specialist_name]: f"No data available from {specialist_name} agent."
+            }
+        
+        # Use LLM to analyze the data
+        llm = get_llm()
+        prompt = SPECIALIST_PROMPTS.get(specialist_name, "Analyze the following data:")
+        
+        messages = [
+            SystemMessage(content=prompt),
+            HumanMessage(content=f"Data:\n{raw_data}\n\nUser query: {state['query']}")
+        ]
+        
+        response = llm.invoke(messages)
+        analysis = response.content
+        
+        logger.info(f"{specialist_name.capitalize()}: Analysis complete")
+        
+        return {
+            **state,
+            analysis_key_map[specialist_name]: analysis
+        }
+    
+    return specialist_node
+
+
+def synthesizer_node(state: SARState) -> SARState:
+    """
+    Synthesizer node - combines all specialist analyses into final response.
+    """
+    logger.info("Synthesizer: Combining analyses...")
+    
+    # Collect all analyses
+    analyses = []
+    
+    if state.get("weather_analysis"):
+        analyses.append(f"**Weather Analysis:**\n{state['weather_analysis']}")
+    if state.get("health_analysis"):
+        analyses.append(f"**Health Assessment:**\n{state['health_analysis']}")
+    if state.get("history_analysis"):
+        analyses.append(f"**Historical Analysis:**\n{state['history_analysis']}")
+    if state.get("photo_analysis"):
+        analyses.append(f"**Photo Analysis:**\n{state['photo_analysis']}")
+    if state.get("path_analysis"):
+        analyses.append(f"**Path Analysis:**\n{state['path_analysis']}")
+    
+    if not analyses:
+        logger.warning("Synthesizer: No analyses available")
+        return {
+            **state,
+            "final_response": "I apologize, but I couldn't gather enough information to provide a comprehensive analysis. Please ensure the SAR agents are running and producing data."
+        }
+    
+    # Use LLM to synthesize
+    llm = get_llm()
+    
+    prompt = SYNTHESIZER_PROMPT.format(
+        analyses="\n\n".join(analyses),
+        query=state["query"]
+    )
+    
+    # Gemini requires at least one user message in contents
+    messages = [
+        HumanMessage(content=prompt),
+    ]
+    
+    response = llm.invoke(messages)
+    
+    logger.info("Synthesizer: Response generated")
+    
+    return {
+        **state,
+        "final_response": response.content,
+        "messages": list(state.get("messages", [])) + [AIMessage(content=response.content)]
+    }
+
+
+# ============================================================================
+# Routing Logic
+# ============================================================================
+
+def route_after_supervisor(state: SARState) -> str:
+    """Route to the first specialist after supervisor."""
+    specialists = state.get("specialists_to_consult", [])
+    
+    if not specialists:
+        return "synthesizer"
+    
+    # Route to first specialist that needs to be consulted
+    priority_order = ["weather", "health", "history", "photo", "path"]
+    for spec in priority_order:
+        if spec in specialists:
+            return spec
+    
+    return "synthesizer"
+
+
+def route_after_specialist(current_specialist: str):
+    """Factory function to create routing logic after each specialist."""
+    
+    priority_order = ["weather", "health", "history", "photo", "path"]
+    
+    def router(state: SARState) -> str:
+        specialists = state.get("specialists_to_consult", [])
+        
+        # Find next specialist in priority order
+        found_current = False
+        for spec in priority_order:
+            if spec == current_specialist:
+                found_current = True
+                continue
+            if found_current and spec in specialists:
+                return spec
+        
+        # No more specialists, go to synthesizer
+        return "synthesizer"
+    
+    return router
+
+
+# ============================================================================
+# Graph Builder
+# ============================================================================
+
+def build_sar_graph() -> StateGraph:
+    """
+    Build the SAR command agent graph.
+    
+    Graph structure:
+        supervisor → weather → health → history → photo → path → synthesizer → END
+                  ↘         ↘          ↘          ↘       ↘
+                   (skip if not in specialists_to_consult)
+    """
+    
+    # Create graph
+    graph = StateGraph(SARState)
+    
+    # Add nodes
+    graph.add_node("supervisor", supervisor_node)
+    graph.add_node("weather", create_specialist_node("weather"))
+    graph.add_node("health", create_specialist_node("health"))
+    graph.add_node("history", create_specialist_node("history"))
+    graph.add_node("photo", create_specialist_node("photo"))
+    graph.add_node("path", create_specialist_node("path"))
+    graph.add_node("synthesizer", synthesizer_node)
+    
+    # Set entry point
+    graph.set_entry_point("supervisor")
+    
+    # Add edges from supervisor
+    graph.add_conditional_edges(
+        "supervisor",
+        route_after_supervisor,
+        {
+            "weather": "weather",
+            "health": "health",
+            "history": "history",
+            "photo": "photo",
+            "path": "path",
+            "synthesizer": "synthesizer",
+        }
+    )
+    
+    # Add edges between specialists
+    for i, spec in enumerate(["weather", "health", "history", "photo", "path"]):
+        graph.add_conditional_edges(
+            spec,
+            route_after_specialist(spec),
+            {
+                "weather": "weather",
+                "health": "health",
+                "history": "history",
+                "photo": "photo",
+                "path": "path",
+                "synthesizer": "synthesizer",
+            }
+        )
+    
+    # Synthesizer goes to END
+    graph.add_edge("synthesizer", END)
+    
+    return graph
+
+
+# Compile the graph with checkpointer for session persistence
+checkpointer = MemorySaver()
+sar_graph = build_sar_graph().compile(checkpointer=checkpointer)
+
+
+# ============================================================================
+# Entry Point
+# ============================================================================
+
+def run_query(query: str, session_id: Optional[str] = None, verbose: bool = False) -> str:
+    """
+    Run a query through the SAR command agent graph.
+    
+    Args:
+        query: User's question or request
+        session_id: Optional session ID for multi-turn conversations.
+                    If provided, conversation history is preserved.
+        verbose: Whether to print intermediate steps
+        
+    Returns:
+        Final synthesized response
+    """
+    # Generate session_id if not provided (single-turn mode)
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+        logger.info(f"New session created: {session_id}")
+    else:
+        logger.info(f"Continuing session: {session_id}")
+    
+    # Config for checkpointing - thread_id enables session persistence
+    config = {"configurable": {"thread_id": session_id}}
+    
+    initial_state = {
+        "messages": [HumanMessage(content=query)],
+        "query": query,
+        "specialists_to_consult": [],
+        "weather_analysis": None,
+        "health_analysis": None,
+        "history_analysis": None,
+        "photo_analysis": None,
+        "path_analysis": None,
+        "final_response": None,
+        "iteration": 0,
+        # Task dispatch fields
+        "pending_tasks": [],
+        "task_results": {},
+        "dispatched_to": [],
+        "use_dispatch_mode": False,  # Set to True to enable active dispatch
+    }
+    
+    if verbose:
+        # Stream with intermediate steps
+        for event in sar_graph.stream(initial_state, config=config):
+            for node_name, node_state in event.items():
+                print(f"\n--- {node_name.upper()} ---")
+                if node_name == "supervisor":
+                    print(f"Specialists to consult: {node_state.get('specialists_to_consult', [])}")
+                elif node_name == "synthesizer":
+                    print(f"Final response generated")
+                else:
+                    analysis_key = f"{node_name}_analysis"
+                    if node_state.get(analysis_key):
+                        print(f"Analysis available: {len(node_state[analysis_key])} chars")
+        # Get final state for verbose mode
+        final_state = sar_graph.invoke(initial_state, config=config)
+        return final_state.get("final_response", "No response generated")
+    else:
+        # Run without streaming
+        final_state = sar_graph.invoke(initial_state, config=config)
+        return final_state.get("final_response", "No response generated")
+
+
+def get_session_history(session_id: str) -> list:
+    """
+    Get conversation history for a session.
+    
+    Args:
+        session_id: Session ID to retrieve history for
+        
+    Returns:
+        List of messages in the session
+    """
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        state = sar_graph.get_state(config)
+        if state and state.values:
+            messages = state.values.get("messages", [])
+            return [
+                {"role": "user" if isinstance(m, HumanMessage) else "assistant", 
+                 "content": m.content}
+                for m in messages
+            ]
+    except Exception as e:
+        logger.warning(f"Could not retrieve session history: {e}")
+    return []
+
+
+if __name__ == "__main__":
+    # Test the graph
+    logging.basicConfig(level=logging.INFO)
+    
+    test_query = "What's the current weather and how does it affect our search operations?"
+    print(f"Query: {test_query}\n")
+    
+    response = run_query(test_query, verbose=True)
+    print(f"\n=== FINAL RESPONSE ===\n{response}")

@@ -9,6 +9,8 @@ import logging
 import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+from urllib.parse import urlparse
+import requests
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 
@@ -22,7 +24,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 30))  # Check every 30 seconds
 AGENT_NAME = "interview-agent"
 AGENT_VERSION = "interview-agent-v1.0"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Redis stream names
 INTERVIEW_INPUT_STREAM = "interview.in.raw"
@@ -36,25 +38,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(AGENT_NAME)
 
+
+def download_pdf_from_url(url: str) -> Optional[bytes]:
+    """
+    Download PDF from URL (supports MinIO presigned URLs and HTTP URLs).
+    Returns the PDF content as bytes.
+    """
+    try:
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        logger.info(f"Downloaded PDF from URL ({len(response.content)} bytes)")
+        return response.content
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to download PDF from URL {url}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error downloading PDF: {e}")
+        return None
+
+
 class InterviewAnalystAgent:
     def __init__(self):
         self.name = AGENT_NAME
         self.version = AGENT_VERSION
-        self.openai_api_key = OPENAI_API_KEY
+        self.google_api_key = GOOGLE_API_KEY
         
-        # Initialize OpenAI if API key is available
-        if self.openai_api_key:
+        # Initialize Gemini if API key is available
+        if self.google_api_key:
             try:
-                import openai
-                openai.api_key = self.openai_api_key
-                self.openai_client = openai.OpenAI()
-                logger.info("OpenAI client initialized successfully")
+                import google.generativeai as genai
+                genai.configure(api_key=self.google_api_key)
+                self.gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+                logger.info("Gemini client initialized successfully")
             except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}")
-                self.openai_client = None
+                logger.error(f"Failed to initialize Gemini client: {e}")
+                self.gemini_model = None
         else:
-            logger.warning("No OpenAI API key found. Using fallback heuristics.")
-            self.openai_client = None
+            logger.warning("No Google API key found. Using fallback heuristics.")
+            self.gemini_model = None
 
     def extract_interview_transcript(self, pdf_content: bytes) -> Optional[str]:
         """Extract text from PDF content"""
@@ -75,22 +96,25 @@ class InterviewAnalystAgent:
             return None
 
     def ask_llm(self, prompt: str) -> Optional[str]:
-        """Ask LLM a question using OpenAI or fallback"""
-        if not self.openai_client:
-            logger.warning("No OpenAI client available. Using fallback.")
+        """Ask LLM a question using Gemini or fallback"""
+        if not self.gemini_model:
+            logger.warning("No Gemini client available. Using fallback.")
             return None
             
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant for analyzing interview transcripts in search and rescue operations."},
-                    {"role": "user", "content": prompt}
-                ]
+            system_prompt = "You are a helpful assistant for analyzing interview transcripts in search and rescue operations."
+            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
+            
+            response = self.gemini_model.generate_content(
+                full_prompt,
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 1000,
+                }
             )
-            return response.choices[0].message.content
+            return response.text
         except Exception as e:
-            logger.error(f"Error calling OpenAI API: {e}")
+            logger.error(f"Error calling Gemini API: {e}")
             return None
 
     def assign_confidence_rating(self, section: str) -> Dict[str, Any]:
@@ -277,21 +301,28 @@ class InterviewAnalystAgent:
     def process_interview_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process interview analysis request"""
         try:
-            # Extract transcript data
-            if "pdf_content" in request_data:
-                # Handle PDF content
+            # Extract transcript data - support file_url, pdf_content, or transcript_text
+            if "file_url" in request_data:
+                # Handle MinIO presigned URL - download and extract
+                file_url = request_data["file_url"]
+                logger.info(f"Downloading PDF from URL: {file_url[:100]}...")
+                pdf_content = download_pdf_from_url(file_url)
+                if not pdf_content:
+                    return {"error": f"Failed to download PDF from URL: {file_url}"}
+                transcript_text = self.extract_interview_transcript(pdf_content)
+            elif "pdf_content" in request_data:
+                # Handle PDF content (base64 encoded)
                 pdf_content = request_data["pdf_content"]
                 if isinstance(pdf_content, str):
                     # Base64 encoded PDF
                     import base64
                     pdf_content = base64.b64decode(pdf_content)
-                
                 transcript_text = self.extract_interview_transcript(pdf_content)
             elif "transcript_text" in request_data:
                 # Handle plain text
                 transcript_text = request_data["transcript_text"]
             else:
-                return {"error": "No transcript data provided (pdf_content or transcript_text required)"}
+                return {"error": "No transcript data provided (file_url, pdf_content, or transcript_text required)"}
             
             if not transcript_text:
                 return {"error": "Failed to extract transcript text"}
@@ -352,8 +383,15 @@ def main():
                 payload = message.payload
                 logger.info(f"Processing interview request from message {message.envelope.message_id}")
                 
+                # Extract task_id for correlation (from dispatch tool)
+                task_id = payload.pop("task_id", None)
+                
                 # Process the interview request
                 result = analyst.process_interview_request(payload)
+                
+                # Include task_id in response for correlation
+                if task_id:
+                    result["task_id"] = task_id
                 
                 # Publish result to output stream
                 output_message = wrap_envelope(
@@ -364,7 +402,8 @@ def main():
                 )
                 
                 bus.publish(output_message)
-                logger.info(f"Published interview analysis result to {INTERVIEW_OUTPUT_STREAM}")
+                logger.info(f"Published interview analysis result to {INTERVIEW_OUTPUT_STREAM}" +
+                           (f" (task_id: {task_id})" if task_id else ""))
                 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")

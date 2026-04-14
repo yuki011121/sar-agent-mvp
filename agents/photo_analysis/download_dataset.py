@@ -62,7 +62,7 @@ def prepare_dataset_for_agent():
         return False
     
     # Create input_images directory if it doesn't exist
-    input_images_dir = Path("input_images")
+    input_images_dir = Path("agents/photo_analysis/input_images")
     input_images_dir.mkdir(exist_ok=True)
     
     # Find all image files in the dataset

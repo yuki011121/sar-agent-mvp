@@ -1,15 +1,26 @@
 # Command Agent Dependencies
 
-# AutoGen for agent orchestration
-pyautogen>=0.2.0
+# LangGraph for agent orchestration (replaces AutoGen)
+langgraph>=0.2.0
+langchain-google-genai>=2.0.0
+langchain-core>=0.3.0
 
-# OpenAI for LLM
-openai>=1.0.0
+# Google Gemini for LLM
+google-generativeai>=0.8.0
 
 # Redis for data access
 redis>=6.0.0
 
-# Other dependencies (from shared package)
+# Environment variables
 python-dotenv>=1.0.0
+
+# Rich CLI
+rich>=13.0.0
+prompt_toolkit>=3.0.0
+
+
+
+
+
 
 

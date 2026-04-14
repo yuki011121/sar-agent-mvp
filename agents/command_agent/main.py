@@ -1,381 +1,360 @@
 #!/usr/bin/env python3
 """
 Command Agent - SAR System Commander
-Using legacy AutoGen (pyautogen < 0.3) for multi-agent orchestration
+Using LangGraph for multi-agent orchestration
+
+This is the main entry point for the Command Agent. It can run in two modes:
+1. Service mode: Continuously listens to command.query.raw stream
+2. Interactive mode: Accepts queries from command line
+
+The agent uses a LangGraph state machine to coordinate specialist agents
+(weather, health, history, photo, path) and synthesize responses.
 """
 
 import os
+import sys
 import json
+import time
 import logging
-from typing import List, Dict, Any
+import uuid
+from typing import Optional
+from datetime import datetime
+
+import redis
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Import shared utilities
+from shared import RedisBus, wrap_envelope, parse_message_from_stream
+
+# Import the LangGraph components
+from .graph import run_query, sar_graph, get_session_history
+
+# Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+AGENT_NAME = "command-agent"
+AGENT_VERSION = "command-agent-v2.0"  # v2.0 = LangGraph version
+
+# Streams
+INPUT_STREAM = "command.query.raw"
+OUTPUT_STREAM = "command.response.raw"
+
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("command-agent-v1.0")
-
-# AutoGen imports
-try:
-    import autogen
-    from autogen import ConversableAgent, UserProxyAgent, GroupChat, GroupChatManager
-    AUTOGEN_AVAILABLE = True
-    logger.info("✓ AutoGen imported successfully")
-except ImportError as e:
-    AUTOGEN_AVAILABLE = False
-    logger.error(f"✗ AutoGen import failed: {e}")
-
-from shared import RedisBus, wrap_envelope, parse_message_from_stream
-import redis
-import json
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AGENT_VERSION = "command-agent-v1.0"
-
-redis_client = None
-config_list = [
-    {
-        "model": "gpt-4",
-        "api_key": OPENAI_API_KEY,
-        "temperature": 0.7,
-        "timeout": 120
-    }
-]
-
-llm_config = {
-    "config_list": config_list,
-    "temperature": 0.7,
-    "timeout": 120
-}
-
-
-class RedisTool:
-    """Redis data reading tool"""
-    
-    def __init__(self, redis_url: str):
-        self.client = redis.Redis.from_url(redis_url, decode_responses=True)
-        self.bus = RedisBus(redis_url)
-        self.client.ping()
-        logger.info("✓ Redis connected")
-    
-    def get_latest_message(self, stream_name: str) -> Dict:
-        """Get latest message"""
-        try:
-            messages = self.client.xrevrange(stream_name, count=1)
-            if messages:
-                msg_id, data = messages[0]
-                parsed = parse_message_from_stream(data)
-                return parsed
-            return {}
-        except Exception as e:
-            logger.error(f"Error reading {stream_name}: {e}")
-            return {}
-    
-    def get_messages(self, stream_name: str, count: int = 10) -> List[Dict]:
-        """Get multiple messages"""
-        try:
-            messages = self.client.xrevrange(stream_name, count=count)
-            results = []
-            for msg_id, data in messages:
-                parsed = parse_message_from_stream(data)
-                if parsed:
-                    results.append(parsed)
-            return results
-        except Exception as e:
-            logger.error(f"Error reading {stream_name}: {e}")
-            return []
-
-
-def get_redis_data(stream_name: str) -> str:
-    """Tool function to read latest message from Redis stream"""
-    global redis_client
-    if not redis_client:
-        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    
-    try:
-        messages = redis_client.xrevrange(stream_name, count=5)
-        if not messages:
-            return f"No data found in {stream_name}"
-        
-        results = []
-        for msg_id, data in messages:
-            try:
-                # Try to parse using shared module
-                parsed = parse_message_from_stream(data)
-                if parsed:
-                    # Extract the actual payload content
-                    result_data = {}
-                    
-                    # Check if it's a StandardMessage with payload attribute
-                    if hasattr(parsed, 'payload'):
-                        result_data = parsed.payload  # This is the actual weather data!
-                    elif isinstance(parsed, dict):
-                        # Check if it has a payload key
-                        if 'payload' in parsed:
-                            result_data = parsed['payload']
-                        else:
-                            result_data = parsed
-                    else:
-                        # Handle other objects
-                        result_data = parsed.model_dump() if hasattr(parsed, 'model_dump') else str(parsed)
-                    
-                    results.append({
-                        "id": msg_id,
-                        "data": result_data
-                    })
-            except Exception as parse_error:
-                # Try direct JSON parse of the raw data
-                try:
-                    if 'body' in data:
-                        body_content = data.get('body', '{}')
-                        if isinstance(body_content, str):
-                            body_json = json.loads(body_content)
-                            if 'payload' in body_json:
-                                result_data = body_json['payload']
-                            else:
-                                result_data = body_json
-                        else:
-                            result_data = body_content
-                    else:
-                        result_data = data
-                    
-                    results.append({
-                        "id": msg_id,
-                        "data": result_data
-                    })
-                except:
-                    results.append({
-                        "id": msg_id,
-                        "data": {"raw": data, "parse_error": str(parse_error)}
-                    })
-        
-        return json.dumps(results, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"Error reading {stream_name}: {str(e)}"
+logger = logging.getLogger(AGENT_NAME)
 
 
 class CommandAgent:
     """
-    Command Agent - SAR System Commander
-    Uses AutoGen to coordinate all specialist agents
+    SAR Command Agent - Orchestrates specialist agents using LangGraph.
+    
+    Modes:
+    - Service: Listens to Redis stream for queries
+    - Interactive: Accepts queries from stdin with session persistence
     """
     
     def __init__(self):
-        global redis_client
-        if not AUTOGEN_AVAILABLE:
-            raise ImportError("AutoGen is required. Install with: pip install pyautogen")
+        self.bus = RedisBus(REDIS_URL)
+        self.redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        self.last_id = "0"  # Track last processed message ID
+        self.current_session_id = None  # Current session for interactive mode
         
-        redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        self.redis_tool = RedisTool(REDIS_URL)
-        logger.info("Command Agent initialized")
-        
-        self.agents = self._create_specialist_agents()
-        
-        self.group_chat = GroupChat(
-            agents=self.agents,
-            messages=[],
-            max_round=50
-        )
-        
-        self.manager = GroupChatManager(
-            groupchat=self.group_chat,
-            llm_config=llm_config
-        )
-        
-        logger.info("✓ Command Agent setup complete")
+        # Verify Redis connection
+        self.redis_client.ping()
+        logger.info(f"✓ Redis connected at {REDIS_URL}")
+        logger.info(f"✓ {AGENT_NAME} {AGENT_VERSION} initialized")
     
-    def _create_specialist_agents(self) -> List[ConversableAgent]:
-        """Create specialist agents"""
+    def process_query(self, query: str, session_id: Optional[str] = None, verbose: bool = False) -> str:
+        """
+        Process a user query through the LangGraph.
         
-        agents = []
+        Args:
+            query: User's question
+            session_id: Session ID for multi-turn conversations
+            verbose: Whether to log intermediate steps
+            
+        Returns:
+            Synthesized response from all specialists
+        """
+        logger.info(f"Processing query: {query[:100]}...")
+        start_time = time.time()
         
-        weather_agent = ConversableAgent(
-            name="weather_specialist",
-            system_message="""
-            You are a weather analysis specialist focused on analyzing weather impact on search and rescue operations.
-            
-            Your responsibilities:
-            1. Call get_weather_data() function to read weather data from Redis
-            2. Analyze weather data (temperature, wind speed, visibility, precipitation, etc.)
-            3. Assess weather conditions' impact on search operations
-            4. Provide specific action recommendations (e.g., postpone search during rain, or take precautions in cold temperatures)
-            
-            When asked about weather, first call get_weather_data() to get the latest data, then analyze.
-            Provide clear, actionable recommendations.
-            """,
-            llm_config=llm_config,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=3,
-            function_map={
-                "get_weather_data": lambda: get_redis_data("weather.forecast.raw")
-            }
-        )
-        agents.append(weather_agent)
-        
-        history_agent = ConversableAgent(
-            name="history_specialist",
-            system_message="""
-            You are a historical case analysis specialist, skilled at extracting useful information from historical SAR cases.
-            
-            Your responsibilities:
-            1. Call get_history_data() function to read historical cases from Redis
-            2. Analyze historical SAR case patterns
-            3. Identify similar cases and successful strategies
-            4. Provide recommendations based on historical data
-            
-            When asked about historical cases, first call get_history_data() to get the latest data, then analyze.
-            Provide strategic recommendations based on historical data.
-            """,
-            llm_config=llm_config,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=3,
-            function_map={
-                "get_history_data": lambda: get_redis_data("history.out.raw")
-            }
-        )
-        agents.append(history_agent)
-        
-        photo_agent = ConversableAgent(
-            name="photo_specialist",
-            system_message="""
-            You are a photo analysis specialist who analyzes SAR-related image information.
-            
-            Your responsibilities:
-            1. Call get_photo_data() function to read photo analysis results from Redis
-            2. Analyze object detection results in photos
-            3. Identify personnel and SAR-related items
-            4. Provide search area recommendations
-            
-            When asked about photo analysis, first call get_photo_data() to get the latest data, then analyze.
-            Provide search recommendations based on photo analysis.
-            """,
-            llm_config=llm_config,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=3,
-            function_map={
-                "get_photo_data": lambda: get_redis_data("photo.analysis.raw")
-            }
-        )
-        agents.append(photo_agent)
-        
-        path_agent = ConversableAgent(
-            name="path_specialist",
-            system_message="""
-            You are a path planning specialist who analyzes terrain and suggests search paths.
-            
-            Your responsibilities:
-            1. Call get_path_data() function to read path analysis data from Redis
-            2. Analyze terrain and path data
-            3. Recommend optimal search paths
-            4. Consider terrain difficulty and accessibility
-            
-            When asked about path planning, first call get_path_data() to get the latest data, then analyze.
-            Provide specific path planning recommendations.
-            """,
-            llm_config=llm_config,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=3,
-            function_map={
-                "get_path_data": lambda: get_redis_data("path.analysis.raw")
-            }
-        )
-        agents.append(path_agent)
-        
-        health_agent = ConversableAgent(
-            name="health_specialist",
-            system_message="""
-            You are a health assessment specialist who evaluates health risks for missing persons.
-            
-            Your responsibilities:
-            1. Call get_health_data() function to read health assessment data from Redis
-            2. Assess risks based on missing person's health status and time
-            3. Consider factors like age and medical history
-            4. Provide health-related action recommendations
-            
-            When asked about health assessment, first call get_health_data() to get the latest data, then analyze.
-            Provide clear health risk assessments and recommendations.
-            """,
-            llm_config=llm_config,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=3,
-            function_map={
-                "get_health_data": lambda: get_redis_data("health.assessment.raw")
-            }
-        )
-        agents.append(health_agent)
-        
-        logger.info(f"Created {len(agents)} specialist agents")
-        return agents
-    
-    def chat(self, user_message: str):
-        """Handle user message"""
-        logger.info(f"User message: {user_message}")
-        
-        user_proxy = UserProxyAgent(
-            name="user",
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=0,
-            llm_config=False,
-            code_execution_config=False
-        )
-        
-        chat_result = user_proxy.initiate_chat(
-            self.manager,
-            message=user_message,
-            max_turns=10
-        )
-        
-        if self.group_chat.messages:
-            last_message = self.group_chat.messages[-1]
-            if hasattr(last_message, 'content'):
-                response = last_message.content
-            else:
-                response = str(last_message)
-            logger.info(f"Response: {response}")
+        try:
+            response = run_query(query, session_id=session_id, verbose=verbose)
+            elapsed = time.time() - start_time
+            logger.info(f"Query processed in {elapsed:.2f}s")
             return response
-        else:
-            return "No response generated."
+        except Exception as e:
+            logger.error(f"Error processing query: {e}", exc_info=True)
+            return f"Error processing query: {str(e)}"
     
-    def get_agent_status(self) -> Dict[str, Any]:
-        """Get agent status"""
+    def publish_response(self, query_id: str, query: str, response: str, session_id: Optional[str] = None):
+        """Publish response to output stream."""
+        payload = {
+            "query_id": query_id,
+            "query": query,
+            "response": response,
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "agent_version": AGENT_VERSION,
+        }
+        
+        message = wrap_envelope(
+            payload=payload,
+            source_name=AGENT_NAME,
+            source_version=AGENT_VERSION,
+            target_stream=OUTPUT_STREAM
+        )
+        
+        self.bus.publish(message)
+        logger.info(f"Response published to {OUTPUT_STREAM}")
+    
+    def parse_query_message(self, data: dict) -> Optional[dict]:
+        """Parse incoming query message."""
+        try:
+            parsed = parse_message_from_stream(data)
+            if parsed and hasattr(parsed, 'payload'):
+                return parsed.payload
+            elif isinstance(parsed, dict):
+                return parsed.get('payload', parsed)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to parse message: {e}")
+            return None
+    
+    def run_service_mode(self):
+        """
+        Run in service mode - continuously listen for queries on Redis stream.
+        """
+        logger.info(f"Starting service mode...")
+        logger.info(f"Listening on: {INPUT_STREAM}")
+        logger.info(f"Publishing to: {OUTPUT_STREAM}")
+        
+        while True:
+            try:
+                # Read new messages with blocking
+                messages = self.redis_client.xread(
+                    {INPUT_STREAM: self.last_id},
+                    count=1,
+                    block=5000  # 5 second timeout
+                )
+                
+                if not messages:
+                    continue
+                
+                for stream_name, stream_messages in messages:
+                    for msg_id, data in stream_messages:
+                        logger.info(f"Received query: {msg_id}")
+                        
+                        # Parse the message
+                        query_data = self.parse_query_message(data)
+                        if not query_data:
+                            logger.warning(f"Invalid query format: {data}")
+                            self.last_id = msg_id
+                            continue
+                        
+                        # Extract query text and session_id
+                        query = query_data.get("query") or query_data.get("question") or str(query_data)
+                        query_id = query_data.get("id", msg_id)
+                        session_id = query_data.get("session_id")
+                        
+                        # Process and respond (with session context if provided)
+                        response = self.process_query(query, session_id=session_id)
+                        self.publish_response(query_id, query, response, session_id=session_id)
+                        
+                        # Update last processed ID
+                        self.last_id = msg_id
+                        
+            except KeyboardInterrupt:
+                logger.info("Shutting down...")
+                break
+            except Exception as e:
+                logger.error(f"Error in service loop: {e}", exc_info=True)
+                time.sleep(5)
+    
+    def run_interactive_mode(self):
+        """
+        Run in interactive mode - accept queries from command line.
+        Supports multi-turn conversations with session persistence.
+        """
+        logger.info("Starting interactive mode...")
+        
+        # Initialize session
+        self.current_session_id = str(uuid.uuid4())
+        
+        print("\n" + "=" * 60)
+        print("SAR Command Agent - Interactive Mode (Multi-Turn)")
+        print("=" * 60)
+        print(f"Session ID: {self.current_session_id[:8]}...")
+        print("\nCommands:")
+        print("  <question>   - Ask a question (uses current session)")
+        print("  new          - Start a new session")
+        print("  history      - Show conversation history")
+        print("  session <id> - Switch to an existing session")
+        print("  verbose      - Toggle verbose output")
+        print("  status       - Show current session info")
+        print("  exit/quit    - Exit the program")
+        print("=" * 60 + "\n")
+        
+        verbose = False
+        
+        while True:
+            try:
+                user_input = input("You: ").strip()
+                
+                if not user_input:
+                    continue
+                
+                # Handle commands
+                if user_input.lower() in ['exit', 'quit', 'q']:
+                    print("Goodbye!")
+                    break
+                
+                if user_input.lower() == 'new':
+                    self.current_session_id = str(uuid.uuid4())
+                    print(f"\n✓ New session started: {self.current_session_id[:8]}...\n")
+                    continue
+                
+                if user_input.lower() == 'history':
+                    history = get_session_history(self.current_session_id)
+                    if history:
+                        print("\n--- Conversation History ---")
+                        for i, msg in enumerate(history, 1):
+                            role = "You" if msg["role"] == "user" else "Assistant"
+                            content = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
+                            print(f"{i}. [{role}]: {content}")
+                        print("---\n")
+                    else:
+                        print("\nNo conversation history yet.\n")
+                    continue
+                
+                if user_input.lower().startswith('session '):
+                    new_session = user_input[8:].strip()
+                    if new_session:
+                        self.current_session_id = new_session
+                        print(f"\n✓ Switched to session: {self.current_session_id[:8]}...\n")
+                    else:
+                        print("\nUsage: session <session_id>\n")
+                    continue
+                
+                if user_input.lower() == 'verbose':
+                    verbose = not verbose
+                    print(f"\nVerbose mode: {'ON' if verbose else 'OFF'}\n")
+                    continue
+                
+                if user_input.lower() == 'status':
+                    history = get_session_history(self.current_session_id)
+                    print(f"\n--- Session Status ---")
+                    print(f"Session ID: {self.current_session_id}")
+                    print(f"Messages in history: {len(history)}")
+                    print(f"Verbose mode: {'ON' if verbose else 'OFF'}")
+                    print("---\n")
+                    continue
+                
+                # Process query with current session
+                print("\nProcessing...\n")
+                response = self.process_query(user_input, session_id=self.current_session_id, verbose=verbose)
+                print(f"\nAssistant: {response}\n")
+                print("-" * 60 + "\n")
+                
+            except KeyboardInterrupt:
+                print("\nGoodbye!")
+                break
+            except EOFError:
+                break
+    
+    def run_single_query(self, query: str, session_id: Optional[str] = None, verbose: bool = False) -> str:
+        """
+        Run a single query and return the response.
+        Useful for testing or one-off queries.
+        
+        Args:
+            query: The question to ask
+            session_id: Optional session ID for context
+            verbose: Whether to show intermediate steps
+        """
+        return self.process_query(query, session_id=session_id, verbose=verbose)
+    
+    def get_status(self) -> dict:
+        """Get agent status information."""
         return {
+            "name": AGENT_NAME,
             "version": AGENT_VERSION,
-            "agents_count": len(self.agents),
-            "agents": [agent.name for agent in self.agents],
-            "status": "ready"
+            "framework": "LangGraph",
+            "input_stream": INPUT_STREAM,
+            "output_stream": OUTPUT_STREAM,
+            "status": "ready",
+            "redis_connected": True,
+            "current_session": self.current_session_id,
+            "features": ["multi-turn-conversations", "session-persistence"],
         }
 
 
 def main():
-    """Main function"""
+    """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="SAR Command Agent")
+    parser.add_argument(
+        "--mode", 
+        choices=["service", "interactive", "cli", "json-io", "query"],
+        default="service",
+        help="Run mode: service (listen to stream), interactive (simple CLI), cli (rich CLI), json-io (JSON stdin/stdout), query (single query)"
+    )
+    parser.add_argument(
+        "--query", "-q",
+        type=str,
+        help="Query to run in query mode"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose output"
+    )
+    
+    args = parser.parse_args()
+    
     logger.info("=" * 60)
-    logger.info("Command Agent - Starting...")
+    logger.info(f"Command Agent {AGENT_VERSION} - Starting...")
     logger.info("=" * 60)
     
     try:
         agent = CommandAgent()
         
-        logger.info("\n" + "=" * 60)
-        logger.info("Command Agent Ready!")
-        logger.info("=" * 60)
-        logger.info(f"Status: {agent.get_agent_status()}")
-        logger.info("\nEnter your questions (type 'exit' to quit):\n")
-        
-        print("\nCommand Agent initialized. Testing with sample question...\n")
-        
-        test_message = "What's the current weather forecast and how does it affect our search operations?"
-        print(f"Question: {test_message}\n")
-        
-        response = agent.chat(test_message)
-        print(f"Response: {response}\n")
+        if args.mode == "service":
+            agent.run_service_mode()
+        elif args.mode == "interactive":
+            agent.run_interactive_mode()
+        elif args.mode == "cli":
+            # Rich CLI mode
+            try:
+                from .cli import run_rich_cli
+                run_rich_cli(agent)
+            except ImportError as e:
+                logger.warning(f"Rich CLI not available ({e}), falling back to interactive mode")
+                agent.run_interactive_mode()
+        elif args.mode == "json-io":
+            # JSON I/O mode for frontend testing
+            try:
+                from .cli import run_json_io
+                run_json_io(agent)
+            except ImportError as e:
+                logger.error(f"JSON I/O mode requires cli module: {e}")
+                sys.exit(1)
+        elif args.mode == "query":
+            if not args.query:
+                print("Error: --query is required in query mode")
+                sys.exit(1)
+            response = agent.run_single_query(args.query, verbose=args.verbose)
+            print(f"\nResponse:\n{response}")
         
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        raise
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

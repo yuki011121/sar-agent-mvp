@@ -1,11 +1,26 @@
 # agents/health/main.py
 
+"""
+Health Assessment Agent (v1.1)
+
+Provides health risk assessments for missing persons based on:
+- Mission/person data
+- Current weather conditions
+- Field observations
+
+Features:
+- Periodic health assessments
+- On-demand queries via health.assess.raw stream
+- Task ID correlation for dispatch/response pattern
+"""
+
 import os
 import time
 import logging
 import json
+import threading
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -17,7 +32,8 @@ load_dotenv()
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))  # Check every hour
-AGENT_VERSION = "health-agent-v1.0"
+AGENT_NAME = os.getenv("AGENT_NAME", "health-agent")
+AGENT_VERSION = os.getenv("AGENT_VERSION", "health-agent-v1.1")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Redis stream names
@@ -25,28 +41,27 @@ MISSION_STREAM = "mission.new"
 WEATHER_STREAM = "weather.forecast.raw"
 OBSERVATION_STREAM = "field.observation.raw"
 HEALTH_ASSESSMENT_STREAM = "health.assessment.raw"
+QUERY_INPUT_STREAM = "health.assess.raw"
 LOGISTICS_REQUEST_STREAM = "logistics.requests.raw"
+DEAD_LETTER_STREAM = "system.dead_letter"
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(AGENT_NAME)
 
-# Initialize RedisBus
-try:
-    bus = RedisBus(REDIS_URL)
-    logging.info(f"Successfully connected to Redis at {REDIS_URL}")
-except Exception as e:
-    logging.error(f"Could not connect to Redis via RedisBus: {e}")
-    exit(1)
+# Global bus reference (initialized in main)
+bus: Optional[RedisBus] = None
 
 # Initialize Google Gemini
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 else:
-    logging.warning("GOOGLE_API_KEY not set. Using mock LLM responses.")
+    logger.warning("GOOGLE_API_KEY not set. Using mock LLM responses.")
+    model = None
     model = None
 
 
@@ -276,7 +291,7 @@ def call_llm(prompt: str) -> Dict:
             tools=[extract_assessment_tool],
             system_instruction=system_instruction,
             provider="gemini",
-            model=os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.0-flash"),
+            model=os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.5-flash"),
         )
 
         response = model.generate_content(**req)
@@ -340,7 +355,8 @@ def call_llm(prompt: str) -> Dict:
         }
 
 
-def publish_health_assessment(assessment: Dict):
+def publish_health_assessment(assessment: Dict, task_id: Optional[str] = None,
+                              mission_id: Optional[str] = None):
     """Publish health assessment to Redis stream via RedisBus using A2A envelope."""
     payload = {
         "metadata": {
@@ -350,17 +366,25 @@ def publish_health_assessment(assessment: Dict):
         },
         "assessment": assessment,
     }
+    
+    # Include task_id for correlation
+    if task_id:
+        payload["task_id"] = task_id
+    if mission_id:
+        payload["mission_id"] = mission_id
+        
     try:
         std_msg = wrap_envelope(
             payload=payload,
-            source_name="health-agent",
+            source_name=AGENT_NAME,
             source_version=AGENT_VERSION,
             target_stream=HEALTH_ASSESSMENT_STREAM,
         )
         bus.publish(std_msg)
-        logging.info(f"Published health assessment to {HEALTH_ASSESSMENT_STREAM}")
+        logger.info(f"Published health assessment to {HEALTH_ASSESSMENT_STREAM}" +
+                   (f" (task_id: {task_id})" if task_id else ""))
     except Exception as e:
-        logging.error(f"Failed to publish health assessment: {e}")
+        logger.error(f"Failed to publish health assessment: {e}")
 
 
 def publish_logistics_request(assessment: Dict):
@@ -396,29 +420,46 @@ def publish_logistics_request(assessment: Dict):
         logging.error(f"Failed to publish logistics request: {e}")
 
 
-def process_health_assessment():
-    """Main processing loop for health assessment"""
+def process_health_assessment(person_info: Optional[Dict] = None,
+                              task_id: Optional[str] = None,
+                              mission_id: Optional[str] = None) -> Dict:
+    """Process health assessment for a person.
+    
+    Args:
+        person_info: Optional person data. If not provided, reads from mission stream.
+        task_id: Optional task ID for correlation with dispatch requests.
+        mission_id: Optional mission ID for context.
+    
+    Returns:
+        Assessment result dict.
+    """
     health_profile = HealthProfile()
     
-    # Read mission data (person info)
-    mission_payloads = read_latest_payloads(MISSION_STREAM, count=1)
-    logging.info(f"Read {len(mission_payloads)} mission payloads from {MISSION_STREAM}")
-    if mission_payloads:
-        person_info = mission_payloads[0].get("person", {})
-        logging.info(f"Using mission data: {person_info}")
+    # Use provided person info or read from mission stream
+    if person_info:
+        logger.info(f"Using provided person data for assessment")
+        health_profile.update_person_info(person_info)
     else:
-        # Hardcoded example data
-        person_info = {
-            "name": "John Doe",
-            "age": 45,
-            "gender": "male",
-            "known_conditions": ["diabetes type 2", "recent back injury"],
-            "clothing": "light jacket, jeans, hiking boots",
-            "time_missing": "36 hours",
-            "last_seen": "mountain trail near summit"
-        }
-        logging.info("Using hardcoded mission data")
-    health_profile.update_person_info(person_info)
+        # Read mission data (person info)
+        mission_payloads = read_latest_payloads(MISSION_STREAM, count=1)
+        logger.info(f"Read {len(mission_payloads)} mission payloads from {MISSION_STREAM}")
+        if mission_payloads:
+            person_data = mission_payloads[0].get("person", {})
+            logger.info(f"Using mission data: {person_data}")
+            health_profile.update_person_info(person_data)
+        else:
+            # Hardcoded example data
+            default_person = {
+                "name": "John Doe",
+                "age": 45,
+                "gender": "male",
+                "known_conditions": ["diabetes type 2", "recent back injury"],
+                "clothing": "light jacket, jeans, hiking boots",
+                "time_missing": "36 hours",
+                "last_seen": "mountain trail near summit"
+            }
+            logger.info("Using hardcoded mission data")
+            health_profile.update_person_info(default_person)
     
     # Read weather data
     weather_payloads = read_latest_payloads(WEATHER_STREAM, count=1)
@@ -466,27 +507,111 @@ def process_health_assessment():
     assessment = call_llm(prompt)
     
     # Publish results
-    publish_health_assessment(assessment)
+    publish_health_assessment(assessment, task_id=task_id, mission_id=mission_id)
     publish_logistics_request(assessment)
     
     return assessment
 
 
-def main():
-    """Main loop for the Health Agent"""
-    logging.info(f"{AGENT_VERSION} starting up. Update interval: {UPDATE_INTERVAL_SECONDS} seconds.")
-    
+def periodic_publisher():
+    """Background thread for periodic health assessments."""
+    logger.info(f"Periodic publisher started. Interval: {UPDATE_INTERVAL_SECONDS}s")
     while True:
-        logging.info("Starting new health assessment cycle.")
-        
+        logger.info("Starting periodic health assessment cycle.")
         try:
             assessment = process_health_assessment()
-            logging.info(f"Health assessment complete. Risk level: {assessment.get('risk_level', 'UNKNOWN')}")
+            logger.info(f"Health assessment complete. Risk level: {assessment.get('risk_level', 'UNKNOWN')}")
         except Exception as e:
-            logging.error(f"Error in health assessment cycle: {e}")
-        
-        logging.info(f"Cycle complete. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
+            logger.error(f"Error in health assessment cycle: {e}")
+        logger.info(f"Cycle complete. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
         time.sleep(UPDATE_INTERVAL_SECONDS)
+
+
+def query_listener():
+    """Listen for on-demand health assessment queries via health.assess.raw stream."""
+    logger.info(f"Query listener started. Listening on: {QUERY_INPUT_STREAM}")
+    
+    try:
+        for message in bus.subscribe(
+            group_name=f"{AGENT_NAME}-query-group",
+            consumer_name=f"{AGENT_NAME}-query-consumer",
+            streams=[QUERY_INPUT_STREAM],
+            block_ms=5000
+        ):
+            try:
+                payload = message.payload
+                logger.info(f"Received health assessment query: {payload}")
+                
+                # Extract parameters
+                task_id = payload.get("task_id")
+                mission_id = payload.get("mission_id")
+                
+                # Extract person info if provided
+                person_info = payload.get("person") or payload.get("person_info")
+                
+                # Additional context (can be merged with person info)
+                context = payload.get("context", {})
+                if context and person_info:
+                    # Merge context into person info
+                    person_info.update(context)
+                
+                # Process the assessment
+                try:
+                    assessment = process_health_assessment(
+                        person_info=person_info,
+                        task_id=task_id,
+                        mission_id=mission_id
+                    )
+                    logger.info(f"Query assessment complete. Risk level: {assessment.get('risk_level', 'UNKNOWN')}")
+                except Exception as e:
+                    logger.error(f"Error processing health assessment: {e}")
+                    # Publish error response
+                    error_payload = {
+                        "failed_agent": f"{AGENT_NAME}:{AGENT_VERSION}",
+                        "error_message": str(e),
+                        "error_type": type(e).__name__,
+                        "context": "Failed while processing health assessment query"
+                    }
+                    if task_id:
+                        error_payload["task_id"] = task_id
+                    
+                    error_message = wrap_envelope(
+                        payload=error_payload,
+                        source_name=AGENT_NAME,
+                        source_version=AGENT_VERSION,
+                        target_stream=DEAD_LETTER_STREAM
+                    )
+                    bus.publish(error_message)
+                
+            except Exception as e:
+                logger.error(f"Error processing query message: {e}")
+                
+    except Exception as e:
+        logger.error(f"Query listener error: {e}")
+
+
+def main():
+    """Main function for the Health Agent"""
+    global bus
+    
+    logger.info(f"Initializing {AGENT_NAME} v{AGENT_VERSION}...")
+    
+    # Initialize Redis connection
+    try:
+        bus = RedisBus(REDIS_URL)
+        logger.info(f"Successfully connected to Redis at {REDIS_URL}")
+    except Exception as e:
+        logger.critical(f"Could not connect to Redis via RedisBus: {e}")
+        return
+    
+    logger.info(f"{AGENT_NAME} starting up.")
+    
+    # Start periodic publisher in background thread
+    periodic_thread = threading.Thread(target=periodic_publisher, daemon=True)
+    periodic_thread.start()
+    
+    # Run query listener in main thread
+    query_listener()
 
 
 if __name__ == "__main__":

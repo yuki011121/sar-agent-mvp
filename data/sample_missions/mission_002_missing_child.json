@@ -1,0 +1,54 @@
+{
+  "id": "MISSION-002",
+  "type": "missing_person",
+  "priority": "critical",
+  "created_at": "2026-02-09T14:00:00Z",
+  "person": {
+    "name": "Emily Chen",
+    "age": 8,
+    "gender": "female",
+    "height_cm": 125,
+    "weight_kg": 25,
+    "health_conditions": ["asthma"],
+    "medications": ["rescue inhaler"],
+    "mobility": "normal",
+    "last_seen": {
+      "time": "2026-02-09T12:30:00Z",
+      "location": "Campsite #47, Lake View Campground",
+      "activity": "Playing near tent while parents prepared lunch",
+      "direction": "Unknown - may have followed trail towards lake"
+    },
+    "clothing": "Pink t-shirt with unicorn, blue shorts, white sneakers",
+    "equipment": ["stuffed animal (brown bear)", "no water or food"]
+  },
+  "location": {
+    "name": "Lake View Campground",
+    "terrain": "mixed forest and lake shore",
+    "coordinates": {
+      "lat": 35.8123,
+      "lon": -120.5678
+    },
+    "search_radius_km": 2,
+    "elevation_range_m": [600, 900],
+    "hazards": ["lake (drowning risk)", "dense brush", "wildlife"]
+  },
+  "witnesses": [
+    {
+      "name": "David Chen",
+      "contact": "on-site",
+      "statement": "She was playing by the tent, I looked away for maybe 5 minutes. When I looked back she was gone."
+    },
+    {
+      "name": "Camper at site #45",
+      "contact": "on-site",
+      "statement": "Saw a little girl in pink walking towards the lake trail around 12:30."
+    }
+  ],
+  "interview_notes": "Child is shy around strangers. Responds to 'Emmy'. Has done some hiking with family but never alone. Parents extremely distressed.",
+  "weather_concerns": ["Clear but getting cold at night", "Temperature will drop to 45F"],
+  "reporting_party": {
+    "name": "David Chen",
+    "relation": "father",
+    "contact": "555-0456"
+  }
+}

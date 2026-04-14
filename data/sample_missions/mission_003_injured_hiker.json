@@ -1,0 +1,55 @@
+{
+  "id": "MISSION-003",
+  "type": "injured_hiker",
+  "priority": "high",
+  "created_at": "2026-02-09T16:45:00Z",
+  "person": {
+    "name": "Marcus Johnson",
+    "age": 34,
+    "gender": "male",
+    "height_cm": 183,
+    "weight_kg": 85,
+    "health_conditions": [],
+    "medications": [],
+    "mobility": "immobile - reported leg injury",
+    "last_seen": {
+      "time": "2026-02-09T15:30:00Z",
+      "location": "Mile marker 7.5 on Summit Trail",
+      "activity": "Fell while descending rocky section",
+      "direction": "Was heading south towards trailhead"
+    },
+    "clothing": "Green hiking jacket, black pants, brown boots",
+    "equipment": ["full backpack", "cell phone (intermittent signal)", "first aid kit", "emergency whistle"]
+  },
+  "location": {
+    "name": "Summit Trail, Rocky Mountain Reserve",
+    "terrain": "rocky alpine",
+    "coordinates": {
+      "lat": 35.9001,
+      "lon": -120.3456
+    },
+    "search_radius_km": 1,
+    "elevation_range_m": [2000, 2500],
+    "hazards": ["loose rock", "steep drop-offs", "exposure"]
+  },
+  "witnesses": [
+    {
+      "name": "Subject (via text)",
+      "contact": "intermittent cell",
+      "statement": "Slipped on loose gravel, fell about 10 feet. Think my ankle is broken. Can't walk. Located about 100m past the big boulder with graffiti."
+    }
+  ],
+  "interview_notes": "Subject is experienced hiker, has emergency supplies. Conscious and alert per text messages. No head injury. Requesting extraction.",
+  "weather_concerns": ["Clear now but fog expected after sunset", "Temperature at elevation near freezing"],
+  "medical_info": {
+    "injury_type": "suspected ankle fracture",
+    "mobility_status": "non-ambulatory",
+    "consciousness": "alert and oriented",
+    "bleeding": "minor abrasions only"
+  },
+  "reporting_party": {
+    "name": "Marcus Johnson",
+    "relation": "self",
+    "contact": "555-0789"
+  }
+}

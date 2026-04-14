@@ -20,27 +20,11 @@ venv/
 .env
 *.env
 
-# Documentation files
-ERROR_LOG.md
-AGENT_EXAMPLES.md
-SAR_SYSTEM_ARCHITECTURE.md
-AUTOGEN_SUCCESS_SUMMARY.md
-CLUEMEISTER_FILES_EXPLAINED.md
-COMMAND_AGENT_FINAL_SUMMARY.md
-COMMAND_AGENT_TEST_RESULTS.md
-DOCKER_SETUP_COMPLETE.md
-DOCKER_WORKFLOW_VISUAL.md
-NEXT_STEPS_README.md
-SYSTEM_DATA_FLOW.md
-system_architecture_visual.md
-REDIS_DATA_TEST_SUCCESS.md
-REDIS_INTEGRATION_SUMMARY.md
-TEST_RESULTS_SUMMARY.md
-WEATHER_PAYLOAD_EXAMPLE.md
-agents/command_agent/*.md
+# Documentation files (now organized in docs/)
+# Keep README files
 # README.md
 # agents/*/README.md
-# agents/*/*/README.md
+# docs/**/*.md
 
 # Large data files and models
 agents/path_analysis/data/*.tif
@@ -51,21 +35,21 @@ agents/path_analysis/data/*.dem
 *.dem
 *.geotiff
 
-# Model files
-*.pt
-*.pth
-*.h5
-*.pkl
+# Model files (keep structure but ignore large files)
+models/*.pt
+models/*.pth
+models/*.h5
+models/*.pkl
 *.joblib
 
 # Logs and debug files
+logs/
 *.log
 *_debug.log
 *_test.log
-photo_analysis_agent.log
-path_analysis_agent.log
 
 # Test outputs and reports
+evaluation/results/
 test_report_*.json
 *_results.json
 *_analysis_results.json
@@ -114,6 +98,18 @@ datasets/*/data/
 datasets/*/images/
 datasets/*/labels/
 input_images/
+
+.github/
+
+# Documentation (local only)
+docs/
+
+# Large data files
+data/isrid2searches_17Jan2023_AmandaBelden.csv
+data/isrid2searches4calpoly_output.csv
+
+# Root README (local only)
+README.md
 
 # Backup files
 *.bak

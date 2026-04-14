@@ -1,0 +1,49 @@
+{
+  "id": "MISSION-001",
+  "type": "missing_person",
+  "priority": "high",
+  "created_at": "2026-02-09T10:30:00Z",
+  "person": {
+    "name": "John Smith",
+    "age": 72,
+    "gender": "male",
+    "height_cm": 175,
+    "weight_kg": 80,
+    "health_conditions": ["diabetes", "mild dementia"],
+    "medications": ["insulin", "metformin"],
+    "mobility": "walks with cane",
+    "last_seen": {
+      "time": "2026-02-09T08:00:00Z",
+      "location": "Trailhead parking lot, Pine Ridge State Park",
+      "activity": "Started morning hike alone",
+      "direction": "North towards Eagle Peak"
+    },
+    "clothing": "Blue jacket, khaki pants, hiking boots, red baseball cap",
+    "equipment": ["water bottle", "cell phone (no signal)", "snack bars"]
+  },
+  "location": {
+    "name": "Pine Ridge State Park",
+    "terrain": "mountainous forest",
+    "coordinates": {
+      "lat": 35.7796,
+      "lon": -120.4321
+    },
+    "search_radius_km": 5,
+    "elevation_range_m": [800, 1500],
+    "hazards": ["steep cliffs", "dense brush", "streams"]
+  },
+  "witnesses": [
+    {
+      "name": "Park Ranger Mike",
+      "contact": "park-radio-1",
+      "statement": "Saw subject at trailhead around 8am, seemed oriented but mentioned wanting to see the waterfall."
+    }
+  ],
+  "interview_notes": "Family reports subject has been increasingly forgetful. Usually returns by noon. Wife called 911 at 3pm when he didn't return.",
+  "weather_concerns": ["Temperature dropping tonight", "Light rain expected"],
+  "reporting_party": {
+    "name": "Mary Smith",
+    "relation": "spouse",
+    "contact": "555-0123"
+  }
+}

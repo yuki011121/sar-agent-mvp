@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir \
     redis \
     python-dotenv \
     PyPDF2 \
-    openai
+    google-generativeai
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

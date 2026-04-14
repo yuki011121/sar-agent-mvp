@@ -22,23 +22,28 @@ RUN pip install --no-cache-dir \
     pillow \
     numpy \
     redis \
-    python-dotenv
+    python-dotenv \
+    requests \
+    minio
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
 
+# Create models directory
+RUN mkdir -p ./models
+
 # Copy agent code
 COPY agents/photo_analysis ./agents/photo_analysis
 COPY agents/base_agent.py ./agents/base_agent.py
-COPY yolov8m.pt ./yolov8m.pt
+COPY agents/photo_analysis/models/yolov8m.pt ./models/yolov8m.pt
 
 # Copy input images directory
-COPY input_images ./input_images
+COPY agents/photo_analysis/input_images ./input_images
 
 # Set environment
 ENV PYTHONPATH=/workspace
 ENV REDIS_URL=redis://redis:6379
-ENV YOLO_MODEL_PATH=/workspace/yolov8m.pt
+ENV YOLO_MODEL_PATH=/workspace/models/yolov8m.pt
 
 WORKDIR /workspace
 

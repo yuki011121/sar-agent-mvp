@@ -60,8 +60,8 @@ class LogisticsChiefAgent(SARBaseAgent):
         self.client = genai.Client(api_key = os.getenv("GEMINI_API_KEY"))
         self.pending_tasks = []
 
-        self.inventory_equipment = self.load_csv("agents/inventory_equipment.csv")
-        self.inventory_personnel = self.load_csv("agents/inventory_personnel.csv")
+        self.inventory_equipment = self.load_csv("data/inventory_equipment.csv")
+        self.inventory_personnel = self.load_csv("data/inventory_personnel.csv")
 
         # Initialize Blackboard keys for global state
         redis_client.set("global:mission_status", "active")
@@ -158,7 +158,7 @@ class LogisticsChiefAgent(SARBaseAgent):
                 if available >= quantity:
                     item["qty_available"] = str(available - quantity) 
 
-                    self.save_csv("agents/inventory_equipment.csv", self.inventory_equipment)
+                    self.save_csv("data/inventory_equipment.csv", self.inventory_equipment)
 
                     return {
                         "status": "dispatched",
@@ -231,7 +231,7 @@ class LogisticsChiefAgent(SARBaseAgent):
             if total_allocated >= quantity:
                 break
 
-        self.save_csv("agents/inventory_personnel.csv", self.inventory_personnel)
+        self.save_csv("data/inventory_personnel.csv", self.inventory_personnel)
 
         if total_allocated < quantity:
             return {

@@ -298,8 +298,21 @@ def main():
     
     for message_read in subGen:
 
+        # Extract task_id for correlation (if dispatched by command agent)
+        task_id = message_read.payload.pop('task_id', None)
+        
         additional_info = message_read.payload.pop('additional', None)
         additional_info = additional_info or ""
+
+        # Handle query from dispatch tool (uses "query" key)
+        if "query" in message_read.payload:
+            # Convert dispatch format to history agent format
+            query_text = message_read.payload.get("query", "")
+            context = message_read.payload.get("context", "")
+            message_read.payload = {
+                "description": query_text,
+                "context": context
+            }
 
         matches = find_match(message_read.payload)
         try:
@@ -307,8 +320,13 @@ def main():
 
             payload = {
                 "summary" : summary,
-                "actions" : actions
+                "actions" : actions,
+                "matches_found": len(matches),
             }
+            
+            # Include task_id in response for correlation
+            if task_id:
+                payload["task_id"] = task_id
 
             message_to_publish = wrap_envelope(
                 payload=payload,
@@ -318,7 +336,8 @@ def main():
             )
 
             bus.publish(message_to_publish)
-            logging.info(f"Successfully published payload to redis stream {STREAM_NAME_OUT}")
+            logging.info(f"Successfully published payload to redis stream {STREAM_NAME_OUT}" + 
+                        (f" (task_id: {task_id})" if task_id else ""))
             
         except Exception as e:
             logging.error(f"Error querying llm or publishing to redis: {e}")
