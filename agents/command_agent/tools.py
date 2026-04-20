@@ -223,31 +223,37 @@ def dispatch_history_query(query: str, context: str = "") -> str:
 
 
 @tool
-def dispatch_interview_analysis(transcript_text: str, witness_name: str = "Unknown") -> str:
+def dispatch_interview_analysis(
+    file_url: str = "",
+    transcript_text: str = "",
+    witness_name: str = "Unknown",
+) -> str:
     """
-    Dispatch interview transcript for analysis by the Interview Agent.
-    
-    Use this when you have witness interview text that needs to be analyzed
-    for confidence levels, extracted entities, and behavioral indicators.
-    
+    Dispatch interview transcript or PDF document for analysis by the Interview Agent.
+
+    Use file_url for PDF documents uploaded to MinIO (preferred).
+    Use transcript_text for raw text transcripts.
+
     Args:
-        transcript_text: The interview transcript text to analyze
-        witness_name: Name of the witness being interviewed
-        
+        file_url: MinIO/S3 presigned URL of a PDF document
+        transcript_text: Raw transcript text (for direct text input)
+        witness_name: Name of witness or document identifier
+
     Returns:
         task_id that can be used to track and retrieve results
     """
     from .task_tracker import get_tracker, get_agent_streams
-    
+
     tracker = get_tracker()
     input_stream, output_stream = get_agent_streams("interview")
-    
+
     payload = {
+        "file_url": file_url,
         "transcript_text": transcript_text,
         "witness_name": witness_name,
         "source": "command-agent-dispatch",
     }
-    
+
     task_id = tracker.submit_task(input_stream, output_stream, payload)
     return f"Task dispatched to Interview Agent: {task_id}"
 

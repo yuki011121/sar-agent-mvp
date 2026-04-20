@@ -17,7 +17,7 @@ import json
 import time
 import logging
 import uuid
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 import redis
@@ -68,15 +68,17 @@ class CommandAgent:
         logger.info(f"✓ Redis connected at {REDIS_URL}")
         logger.info(f"✓ {AGENT_NAME} {AGENT_VERSION} initialized")
     
-    def process_query(self, query: str, session_id: Optional[str] = None, verbose: bool = False) -> str:
+    def process_query(self, query: str, session_id: Optional[str] = None,
+                      file_urls: Optional[list] = None, verbose: bool = False) -> str:
         """
         Process a user query through the LangGraph.
-        
+
         Args:
             query: User's question
             session_id: Session ID for multi-turn conversations
+            file_urls: Uploaded file context (images, PDFs) from API Gateway
             verbose: Whether to log intermediate steps
-            
+
         Returns:
             Synthesized response from all specialists
         """
@@ -84,21 +86,25 @@ class CommandAgent:
         start_time = time.time()
         
         try:
-            response = run_query(query, session_id=session_id, verbose=verbose)
+            response = run_query(query, session_id=session_id,
+                                 file_urls=file_urls, verbose=verbose)
             elapsed = time.time() - start_time
             logger.info(f"Query processed in {elapsed:.2f}s")
             return response
         except Exception as e:
             logger.error(f"Error processing query: {e}", exc_info=True)
             return f"Error processing query: {str(e)}"
-    
-    def publish_response(self, query_id: str, query: str, response: str, session_id: Optional[str] = None):
+
+    def publish_response(self, query_id: str, query: str, response: str,
+                         session_id: Optional[str] = None,
+                         agents_used: Optional[list] = None):
         """Publish response to output stream."""
         payload = {
             "query_id": query_id,
             "query": query,
             "response": response,
             "session_id": session_id,
+            "agents_used": agents_used or [],
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "agent_version": AGENT_VERSION,
         }
@@ -157,14 +163,31 @@ class CommandAgent:
                             self.last_id = msg_id
                             continue
                         
-                        # Extract query text and session_id
+                        # Extract query text, session, and file context
                         query = query_data.get("query") or query_data.get("question") or str(query_data)
                         query_id = query_data.get("id", msg_id)
                         session_id = query_data.get("session_id")
-                        
-                        # Process and respond (with session context if provided)
-                        response = self.process_query(query, session_id=session_id)
-                        self.publish_response(query_id, query, response, session_id=session_id)
+                        file_urls = query_data.get("file_urls", [])
+
+                        # Process query (active dispatch mode)
+                        response = self.process_query(
+                            query, session_id=session_id, file_urls=file_urls
+                        )
+
+                        # Retrieve which agents were dispatched from graph state
+                        agents_used: list = []
+                        try:
+                            config = {"configurable": {"thread_id": session_id or "default"}}
+                            final_state = sar_graph.get_state(config)
+                            if final_state:
+                                agents_used = final_state.values.get("dispatched_to", []) or []
+                        except Exception as _e:
+                            logger.debug(f"Could not retrieve dispatched_to from state: {_e}")
+
+                        self.publish_response(
+                            query_id, query, response,
+                            session_id=session_id, agents_used=agents_used
+                        )
                         
                         # Update last processed ID
                         self.last_id = msg_id

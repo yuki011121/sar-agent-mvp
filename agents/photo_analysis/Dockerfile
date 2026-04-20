@@ -29,8 +29,8 @@ RUN pip install --no-cache-dir \
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
 
-# Create models directory
-RUN mkdir -p ./models
+# Create models and logs directories
+RUN mkdir -p ./models /workspace/logs
 
 # Copy agent code
 COPY agents/photo_analysis ./agents/photo_analysis

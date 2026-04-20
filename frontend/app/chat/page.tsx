@@ -32,18 +32,15 @@ export default function ChatPage() {
         "Welcome to **SAR Command Center**. I can help with search and rescue operations — ask about weather conditions, medical risks, historical cases, or upload photos and documents for analysis.",
     },
   ]);
-  const [sessionId, setSessionId] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem(SESSION_KEY) || uuidv4();
-    }
-    return uuidv4();
-  });
+  const [sessionId, setSessionId] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    localStorage.setItem(SESSION_KEY, sessionId);
-  }, [sessionId]);
+    const stored = localStorage.getItem(SESSION_KEY) || uuidv4();
+    setSessionId(stored);
+    localStorage.setItem(SESSION_KEY, stored);
+  }, []);
 
   const handleNewSession = () => {
     const newId = uuidv4();
@@ -122,7 +119,7 @@ export default function ChatPage() {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantId
-                  ? { ...m, content: `_${data}_` }
+                  ? { ...m, agents: [...(m.agents ?? []), data] }
                   : m
               )
             );

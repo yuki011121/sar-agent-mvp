@@ -302,7 +302,7 @@ class InterviewAnalystAgent:
         """Process interview analysis request"""
         try:
             # Extract transcript data - support file_url, pdf_content, or transcript_text
-            if "file_url" in request_data:
+            if request_data.get("file_url"):
                 # Handle MinIO presigned URL - download and extract
                 file_url = request_data["file_url"]
                 logger.info(f"Downloading PDF from URL: {file_url[:100]}...")

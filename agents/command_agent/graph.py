@@ -89,6 +89,7 @@ class SARState(TypedDict):
     task_results: Optional[Dict[str, Any]]
     dispatched_to: Optional[List[str]]
     use_dispatch_mode: Optional[bool]
+    file_urls: Optional[List[Dict[str, Any]]]  # uploaded file context from query
 
 
 # ============================================================================
@@ -103,7 +104,10 @@ def get_llm(with_tools: bool = False) -> ChatGoogleGenerativeAI:
         google_api_key=GOOGLE_API_KEY,
     )
     if with_tools:
-        return llm.bind_tools(ALL_TOOLS)
+        # Bind only dispatch tools (exclude wait_for_task_results — handled by system)
+        from .tools import DISPATCH_TOOLS, wait_for_task_results
+        supervisor_tools = [t for t in DISPATCH_TOOLS if t is not wait_for_task_results]
+        return llm.bind_tools(supervisor_tools)
     return llm
 
 
@@ -194,48 +198,105 @@ User's original query: {query}
 """
 
 
+SUPERVISOR_DISPATCH_PROMPT = """You are the SAR Command Center Supervisor.
+Actively dispatch tasks to specialist agents using the dispatch_* tools.
+
+RULES:
+- Always call dispatch_history_query for any SAR query.
+- Call dispatch_weather_query if weather, terrain, environment, or exposure is relevant.
+- Call dispatch_health_assessment if person health, age, or medical info is mentioned.
+- Call dispatch_path_analysis if location, route, or terrain is relevant.
+- If file_urls contains images → call dispatch_photo_analysis with that image_url.
+- If file_urls contains PDFs → call dispatch_interview_analysis with that file_url.
+- Default coordinates if no location given: lat=35.2828, lon=-120.6596.
+- Do NOT call wait_for_task_results — the system collects results automatically.
+- Output ONLY tool calls, no prose or explanation.
+"""
+
+
 # ============================================================================
 # Graph Nodes
 # ============================================================================
 
 def supervisor_node(state: SARState) -> SARState:
     """
-    Supervisor node - decides which specialists to consult.
+    Supervisor node — uses tool-calling LLM to actively dispatch tasks to specialists,
+    then waits for all results via TaskTracker.
     """
-    logger.info("Supervisor: Analyzing query...")
-    
-    llm = get_llm()
-    
-    messages = [
-        SystemMessage(content=SUPERVISOR_PROMPT),
-        HumanMessage(content=f"User query: {state['query']}")
-    ]
-    
-    response = llm.invoke(messages)
-    
+    import re as _re
+    from langchain_core.messages import ToolMessage
+    from .tools import TOOL_MAP
+    from .task_tracker import get_tracker
+
+    logger.info("Supervisor: Dispatching tasks to agents...")
+
+    # --- Step 1: Fast structured context extraction (no tools, single call) ---
+    ctx_llm = get_llm(with_tools=False)
+    ctx = {}
     try:
-        # Parse the JSON response
-        content = response.content
-        # Handle potential markdown code blocks
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
-        
-        result = json.loads(content.strip())
-        specialists = result.get("specialists", ["weather", "health", "history"])
-        reasoning = result.get("reasoning", "")
-        
-        logger.info(f"Supervisor: Consulting specialists: {specialists}")
-        logger.info(f"Supervisor: Reasoning: {reasoning}")
-        
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Supervisor: Could not parse response, using defaults. Error: {e}")
-        specialists = ["weather", "health", "history"]
-    
+        ctx_resp = ctx_llm.invoke([HumanMessage(content=(
+            "Extract from this SAR query and respond in JSON only (no markdown):\n"
+            '{"lat": float_or_null, "lon": float_or_null, "person": "description_or_null", "themes": ["list"]}\n\n'
+            f"Query: {state['query']}\n"
+            f"Files: {json.dumps(state.get('file_urls') or [])}"
+        ))])
+        import re as _re2
+        match = _re2.search(r'\{.*\}', ctx_resp.content, _re2.DOTALL)
+        if match:
+            ctx = json.loads(match.group())
+    except Exception as _ctx_err:
+        logger.warning(f"Supervisor: context extraction failed: {_ctx_err}")
+
+    logger.info(f"Supervisor: extracted context: {ctx}")
+
+    # --- Step 2: Agentic tool-call dispatch loop ---
+    llm = get_llm(with_tools=True)
+
+    enriched_query = (
+        f"User query: {state['query']}\n"
+        f"Extracted: lat={ctx.get('lat')}, lon={ctx.get('lon')}, person={ctx.get('person')}\n"
+        f"File context: {json.dumps(state.get('file_urls') or [])}\n"
+        f"Themes: {ctx.get('themes', ['history'])}"
+    )
+    messages = [
+        SystemMessage(content=SUPERVISOR_DISPATCH_PROMPT),
+        HumanMessage(content=enriched_query),
+    ]
+
+    dispatched_task_ids: List[str] = []
+
+    for _ in range(5):  # agentic tool-call loop, max 5 rounds
+        response = llm.invoke(messages)
+        messages.append(response)
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if not tool_calls:
+            break
+        for tc in tool_calls:
+            fn = TOOL_MAP.get(tc["name"])
+            if fn:
+                result = fn.invoke(tc["args"])
+                result_str = str(result)
+                ids = _re.findall(r"TASK-[\w-]+", result_str)
+                dispatched_task_ids.extend(ids)
+                logger.info(f"Supervisor: dispatched {tc['name']} → {ids}")
+                messages.append(ToolMessage(content=result_str, tool_call_id=tc["id"]))
+            else:
+                logger.warning(f"Supervisor: unknown tool {tc['name']}")
+
+    # Wait for all dispatched tasks (blocking — runs in command-agent thread, not async)
+    task_results: Dict[str, Any] = {}
+    if dispatched_task_ids:
+        tracker = get_tracker()
+        task_results = tracker.wait_for_tasks(dispatched_task_ids, timeout=60)
+        logger.info(f"Supervisor: collected {len(task_results)}/{len(dispatched_task_ids)} results")
+    else:
+        logger.warning("Supervisor: no tasks dispatched, falling back to passive read")
+
     return {
         **state,
-        "specialists_to_consult": specialists,
+        "specialists_to_consult": [],
+        "task_results": task_results,
+        "dispatched_to": dispatched_task_ids,
         "iteration": state.get("iteration", 0) + 1,
     }
 
@@ -310,52 +371,55 @@ def create_specialist_node(specialist_name: str):
 
 def synthesizer_node(state: SARState) -> SARState:
     """
-    Synthesizer node - combines all specialist analyses into final response.
+    Synthesizer node — combines task_results (dispatch mode) or legacy specialist
+    analysis fields into a final response via LLM.
     """
     logger.info("Synthesizer: Combining analyses...")
-    
-    # Collect all analyses
+
     analyses = []
-    
-    if state.get("weather_analysis"):
-        analyses.append(f"**Weather Analysis:**\n{state['weather_analysis']}")
-    if state.get("health_analysis"):
-        analyses.append(f"**Health Assessment:**\n{state['health_analysis']}")
-    if state.get("history_analysis"):
-        analyses.append(f"**Historical Analysis:**\n{state['history_analysis']}")
-    if state.get("photo_analysis"):
-        analyses.append(f"**Photo Analysis:**\n{state['photo_analysis']}")
-    if state.get("path_analysis"):
-        analyses.append(f"**Path Analysis:**\n{state['path_analysis']}")
-    
+
+    # Dispatch mode: read from task_results populated by supervisor
+    for task_id, result in (state.get("task_results") or {}).items():
+        if isinstance(result, dict) and "error" not in result:
+            agent = result.get("agent", task_id)
+            analyses.append(f"**{agent} Analysis:**\n{json.dumps(result, default=str)[:2000]}")
+        elif isinstance(result, dict):
+            logger.warning(f"Synthesizer: task {task_id} returned error: {result}")
+
+    # Fallback: legacy passive-read specialist fields (when dispatch returned nothing)
     if not analyses:
-        logger.warning("Synthesizer: No analyses available")
+        for field_key, label in [
+            ("weather_analysis", "Weather"),
+            ("health_analysis", "Health"),
+            ("history_analysis", "History"),
+            ("photo_analysis", "Photo"),
+            ("path_analysis", "Path"),
+        ]:
+            if state.get(field_key):
+                analyses.append(f"**{label} Analysis:**\n{state[field_key]}")
+
+    if not analyses:
+        logger.warning("Synthesizer: No analyses available from any source")
         return {
             **state,
-            "final_response": "I apologize, but I couldn't gather enough information to provide a comprehensive analysis. Please ensure the SAR agents are running and producing data."
+            "final_response": (
+                "No agent data available. Please ensure specialist agents are running "
+                "and connected to Redis."
+            ),
         }
-    
-    # Use LLM to synthesize
+
     llm = get_llm()
-    
     prompt = SYNTHESIZER_PROMPT.format(
         analyses="\n\n".join(analyses),
-        query=state["query"]
+        query=state["query"],
     )
-    
-    # Gemini requires at least one user message in contents
-    messages = [
-        HumanMessage(content=prompt),
-    ]
-    
-    response = llm.invoke(messages)
-    
+    response = llm.invoke([HumanMessage(content=prompt)])
+
     logger.info("Synthesizer: Response generated")
-    
     return {
         **state,
         "final_response": response.content,
-        "messages": list(state.get("messages", [])) + [AIMessage(content=response.content)]
+        "messages": list(state.get("messages", [])) + [AIMessage(content=response.content)],
     }
 
 
@@ -364,18 +428,19 @@ def synthesizer_node(state: SARState) -> SARState:
 # ============================================================================
 
 def route_after_supervisor(state: SARState) -> str:
-    """Route to the first specialist after supervisor."""
+    """Route after supervisor — dispatch mode goes straight to synthesizer."""
+    # In dispatch mode the supervisor already waited for all task results
+    if state.get("use_dispatch_mode", True):
+        return "synthesizer"
+
+    # Legacy passive-read path
     specialists = state.get("specialists_to_consult", [])
-    
     if not specialists:
         return "synthesizer"
-    
-    # Route to first specialist that needs to be consulted
     priority_order = ["weather", "health", "history", "photo", "path"]
     for spec in priority_order:
         if spec in specialists:
             return spec
-    
     return "synthesizer"
 
 
@@ -475,7 +540,9 @@ sar_graph = build_sar_graph().compile(checkpointer=checkpointer)
 # Entry Point
 # ============================================================================
 
-def run_query(query: str, session_id: Optional[str] = None, verbose: bool = False) -> str:
+def run_query(query: str, session_id: Optional[str] = None,
+              file_urls: Optional[List[Dict[str, Any]]] = None,
+              verbose: bool = False) -> str:
     """
     Run a query through the SAR command agent graph.
     
@@ -513,7 +580,8 @@ def run_query(query: str, session_id: Optional[str] = None, verbose: bool = Fals
         "pending_tasks": [],
         "task_results": {},
         "dispatched_to": [],
-        "use_dispatch_mode": False,  # Set to True to enable active dispatch
+        "use_dispatch_mode": True,
+        "file_urls": file_urls or [],
     }
     
     if verbose:
