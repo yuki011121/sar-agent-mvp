@@ -614,7 +614,7 @@ async def chat(
         except Exception:
             last_id = "0-0"
 
-        timeout = 120
+        timeout = 200
         start = asyncio.get_event_loop().time()
         found = False
 

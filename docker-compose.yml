@@ -39,6 +39,7 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - PHOTO_DEFENSE_ENABLED=${PHOTO_DEFENSE_ENABLED:-false}
     depends_on: [redis]
     networks:
       - sar-net
@@ -51,11 +52,12 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
-    depends_on: [redis]
+      - QDRANT_COLLECTION=SAR_collection
+      - QDRANT_URL=http://qdrant:6333
+      - HISTORY_DEFENSE_ENABLED=${HISTORY_DEFENSE_ENABLED:-true}
+    depends_on: [redis, qdrant]
     networks:
       - sar-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   logistics-agent:
     build:
@@ -191,6 +193,7 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - MINIO_ENDPOINT=minio:9000
       - API_HOST=0.0.0.0
       - API_PORT=8080
     ports:

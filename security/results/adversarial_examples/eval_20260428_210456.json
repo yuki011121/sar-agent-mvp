@@ -1,0 +1,352 @@
+{
+  "metadata": {
+    "timestamp": "2026-04-28T21:04:29.223373Z",
+    "image": "agents/photo_analysis/input_images/gss117_jpg.rf.12679b952de385a4c6ca05ea30223975.jpg",
+    "model": "yolov8m.pt",
+    "attack": "FGSM person suppression",
+    "defense": "Gaussian blur (5x5, sigma=0)",
+    "epsilon_values": [
+      0.01568627450980392,
+      0.03137254901960784,
+      0.06274509803921569
+    ],
+    "n_trials_per_epsilon": 5,
+    "conf_threshold": 0.3
+  },
+  "phases": [
+    {
+      "phase": "Phase 1: Baseline (clean, no defense)",
+      "trials": [
+        {
+          "trial": 1,
+          "epsilon": null,
+          "success": false,
+          "person_detected": true,
+          "max_person_conf": 0.8293105959892273
+        },
+        {
+          "trial": 2,
+          "epsilon": null,
+          "success": false,
+          "person_detected": true,
+          "max_person_conf": 0.8293105959892273
+        },
+        {
+          "trial": 3,
+          "epsilon": null,
+          "success": false,
+          "person_detected": true,
+          "max_person_conf": 0.8293105959892273
+        },
+        {
+          "trial": 4,
+          "epsilon": null,
+          "success": false,
+          "person_detected": true,
+          "max_person_conf": 0.8293105959892273
+        },
+        {
+          "trial": 5,
+          "epsilon": null,
+          "success": false,
+          "person_detected": true,
+          "max_person_conf": 0.8293105959892273
+        }
+      ],
+      "asr": 0.0
+    },
+    {
+      "phase": "Phase 2: Attack (FGSM, no defense)",
+      "trials": [
+        {
+          "trial": 1,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "yolo_person_conf": 0.610740602016449
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "yolo_person_conf": 0.610740602016449
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "yolo_person_conf": 0.610740602016449
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "yolo_person_conf": 0.610740602016449
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "yolo_person_conf": 0.610740602016449
+        },
+        {
+          "trial": 1,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "yolo_person_conf": 0.6302863955497742
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "yolo_person_conf": 0.6302863955497742
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "yolo_person_conf": 0.6302863955497742
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "yolo_person_conf": 0.6302863955497742
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "yolo_person_conf": 0.6302863955497742
+        },
+        {
+          "trial": 1,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "yolo_person_conf": 0.5820608139038086
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "yolo_person_conf": 0.5820608139038086
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "yolo_person_conf": 0.5820608139038086
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "yolo_person_conf": 0.5820608139038086
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "yolo_person_conf": 0.5820608139038086
+        }
+      ],
+      "asr": 0.0
+    },
+    {
+      "phase": "Phase 3: Defense (FGSM + Gaussian blur)",
+      "trials": [
+        {
+          "trial": 1,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "defended_person_conf": 0.8039160370826721
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "defended_person_conf": 0.8039160370826721
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "defended_person_conf": 0.8039160370826721
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "defended_person_conf": 0.8039160370826721
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.01568627450980392,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.610741138458252,
+          "defended_person_conf": 0.8039160370826721
+        },
+        {
+          "trial": 1,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "defended_person_conf": 0.778501570224762
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "defended_person_conf": 0.778501570224762
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "defended_person_conf": 0.778501570224762
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "defended_person_conf": 0.778501570224762
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.03137254901960784,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.630285918712616,
+          "defended_person_conf": 0.778501570224762
+        },
+        {
+          "trial": 1,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "defended_person_conf": 0.7146357893943787
+        },
+        {
+          "trial": 2,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "defended_person_conf": 0.7146357893943787
+        },
+        {
+          "trial": 3,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "defended_person_conf": 0.7146357893943787
+        },
+        {
+          "trial": 4,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "defended_person_conf": 0.7146357893943787
+        },
+        {
+          "trial": 5,
+          "epsilon": 0.06274509803921569,
+          "success": false,
+          "person_detected": true,
+          "clean_conf": 0.8293105959892273,
+          "adv_conf": 0.5820618271827698,
+          "defended_person_conf": 0.7146357893943787
+        }
+      ],
+      "asr": 0.0
+    }
+  ],
+  "summary": {
+    "Phase 1: Baseline (clean, no defense)": {
+      "asr": 0.0
+    },
+    "Phase 2: Attack (FGSM, no defense)": {
+      "asr": 0.0
+    },
+    "Phase 3: Defense (FGSM + Gaussian blur)": {
+      "asr": 0.0
+    }
+  }
+}

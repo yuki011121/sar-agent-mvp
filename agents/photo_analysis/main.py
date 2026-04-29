@@ -50,6 +50,9 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
+# Adversarial-example defense: Gaussian smoothing applied before YOLO inference
+PHOTO_DEFENSE_ENABLED = os.getenv("PHOTO_DEFENSE_ENABLED", "false").lower() == "true"
+
 # Enhanced logging configuration
 logging.basicConfig(
     level=logging.INFO,
@@ -425,6 +428,13 @@ def safe_analyze_image(image_path: str) -> Dict[str, Any]:
                 "error_type": "loading_error"
             }
         
+        # Adversarial-example defense: smooth image to destroy high-frequency perturbations
+        if PHOTO_DEFENSE_ENABLED:
+            img_cv = cv2.imread(image_path)
+            if img_cv is not None:
+                img_blurred = cv2.GaussianBlur(img_cv, (5, 5), 0)
+                cv2.imwrite(image_path, img_blurred)
+
         # YOLOv8 object detection
         try:
             results = model(image_path)
@@ -928,7 +938,10 @@ def main():
                         
                         try:
                             # Parse the message
-                            if "data" in msg_data:
+                            if "body" in msg_data:
+                                data = json.loads(msg_data["body"])
+                                payload = data.get("payload", data)
+                            elif "data" in msg_data:
                                 data = json.loads(msg_data["data"])
                                 payload = data.get("payload", data)
                             else:

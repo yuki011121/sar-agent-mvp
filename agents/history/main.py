@@ -36,6 +36,48 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# ── RAG context sanitization (data-poisoning defense) ─────────────────────────
+# Patterns that indicate a poisoned chunk attempting to redirect operations or
+# bias recommendations. Checked against each chunk's content before LLM use.
+import re as _re
+
+# Set HISTORY_DEFENSE_ENABLED=false to disable for controlled experiments
+DEFENSE_ENABLED = os.getenv("HISTORY_DEFENSE_ENABLED", "true").lower() == "true"
+
+_POISON_PATTERNS = [
+    _re.compile(r"suspend[_\s]+search", _re.IGNORECASE),
+    _re.compile(r"found[_\s]+safe", _re.IGNORECASE),
+    _re.compile(r"terminate\s+(all\s+)?search", _re.IGNORECASE),
+    _re.compile(r"subject[_\s]+located", _re.IGNORECASE),
+    _re.compile(r"no\s+further\s+search", _re.IGNORECASE),
+    _re.compile(r"operational\s+update", _re.IGNORECASE),
+    _re.compile(r"urgent\s+(operational|sar)", _re.IGNORECASE),
+    _re.compile(r"trail.{0,30}ineffective", _re.IGNORECASE),
+    _re.compile(r"trail.{0,30}useless", _re.IGNORECASE),
+    _re.compile(r"do\s+not.{0,20}trail", _re.IGNORECASE),
+    _re.compile(r"reallocate.{0,30}(resource|personnel)", _re.IGNORECASE),
+]
+
+
+def _detect_poison(text: str) -> bool:
+    return any(p.search(text) for p in _POISON_PATTERNS)
+
+
+def _sanitize_rag_context(contexts: list[dict]) -> list[dict]:
+    if not DEFENSE_ENABLED:
+        return contexts
+    sanitized = []
+    for ctx in contexts:
+        content = ctx.get("content", "")
+        if _detect_poison(content):
+            logging.warning(
+                "Poisoned RAG chunk detected and removed from context. "
+                f"Content snippet: {content[:120]!r}"
+            )
+        else:
+            sanitized.append(ctx)
+    return sanitized
+
 
 if GOOGLE_API_KEY is None:
     logging.info("Couldn't find a api key for google api")
@@ -235,6 +277,7 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
                                                            f"\n {incident_Info}" +"\n Where to locate a missing person based on the summary above.").tolist()
     additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
     additional_context = [context.payload for context in additional_context]
+    additional_context = _sanitize_rag_context(additional_context)
     #query llm for actions to take based on summaries generated
     
     dev_instructions = (
@@ -341,7 +384,24 @@ def main():
             
         except Exception as e:
             logging.error(f"Error querying llm or publishing to redis: {e}")
-        
+            if task_id:
+                try:
+                    failure_payload = {
+                        "task_id": task_id,
+                        "summary": "History analysis failed due to an internal error.",
+                        "actions": "",
+                        "matches_found": 0,
+                        "error": str(e),
+                    }
+                    bus.publish(wrap_envelope(
+                        payload=failure_payload,
+                        source_name=AGENT_NAME,
+                        source_version=AGENT_VERSION,
+                        target_stream=STREAM_NAME_OUT
+                    ))
+                except Exception as pub_err:
+                    logging.error(f"Failed to publish error response: {pub_err}")
+
 
 
 

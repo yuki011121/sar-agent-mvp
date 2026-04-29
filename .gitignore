@@ -128,4 +128,6 @@ ehthumbs.db
 Desktop.ini
 
 agents/history/data
-*.svgfrontend/.next/
+*.svg
+frontend/.next/
+*.pt
