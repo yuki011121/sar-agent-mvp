@@ -289,31 +289,36 @@ def dispatch_photo_analysis(image_url: str, description: str = "") -> str:
 
 
 @tool
-def dispatch_weather_query(latitude: float, longitude: float) -> str:
+def dispatch_weather_query(latitude: float, longitude: float, date: str = "") -> str:
     """
     Dispatch a weather query for specific coordinates.
-    
-    Use this when you need current weather conditions for a specific location
-    rather than the default search area.
-    
+
+    Use this when you need weather conditions for a specific location.
+    For current/forecast weather, omit date. For historical weather on a past day,
+    provide date in YYYY-MM-DD format.
+
     Args:
         latitude: Latitude of the location
         longitude: Longitude of the location
-        
+        date: Optional past date in YYYY-MM-DD format for historical weather queries.
+              Leave empty for current conditions or forecast.
+
     Returns:
         task_id that can be used to track and retrieve results
     """
     from .task_tracker import get_tracker, get_agent_streams
-    
+
     tracker = get_tracker()
     input_stream, output_stream = get_agent_streams("weather")
-    
+
     payload = {
         "latitude": latitude,
         "longitude": longitude,
         "request_type": "on_demand",
     }
-    
+    if date:
+        payload["date"] = date
+
     task_id = tracker.submit_task(input_stream, output_stream, payload)
     return f"Task dispatched to Weather Agent: {task_id}"
 

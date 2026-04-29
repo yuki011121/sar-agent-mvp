@@ -203,7 +203,7 @@ Actively dispatch tasks to specialist agents using the dispatch_* tools.
 
 RULES:
 - Call dispatch_history_query only if the query asks about past SAR cases, historical incidents, similar cases, or precedents. Do NOT call it for weather, health, or witness statement queries.
-- Call dispatch_weather_query if weather, terrain, environment, or exposure is relevant.
+- Call dispatch_weather_query if weather, terrain, environment, or exposure is relevant. If the query mentions a specific past date or day (e.g. "last Monday", "on April 10th", "3 days ago"), convert it to YYYY-MM-DD and pass as the date argument.
 - Call dispatch_health_assessment if person health, age, or medical info is mentioned.
 - Call dispatch_path_analysis if location, route, or terrain is relevant.
 - Call dispatch_interview_analysis if: (a) file_urls contains a PDF, OR (b) the query contains witness testimony, statements of what someone observed, interview transcripts, or any narrative account of seeing the missing person. Pass the text as transcript_text.

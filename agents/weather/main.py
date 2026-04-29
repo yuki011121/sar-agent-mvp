@@ -17,6 +17,7 @@ import time
 import logging
 import threading
 import requests
+from datetime import date as date_type
 from typing import Optional, Dict, Any
 
 from shared import wrap_envelope, RedisBus, parse_message_from_stream
@@ -38,6 +39,81 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(AGENT_NAME)
+
+WMO_CODES = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Slight showers", 81: "Moderate showers", 82: "Violent showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
+}
+
+
+def fetch_historical_weather(lat: float, lon: float, query_date: str) -> Optional[Dict[str, Any]]:
+    """Fetch historical weather for a specific past date using Open-Meteo archive API."""
+    url = "https://archive-api.open-meteo.com/v1/archive"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": query_date,
+        "end_date": query_date,
+        "daily": "temperature_2m_max,temperature_2m_min,weathercode,windspeed_10m_max,precipitation_sum",
+        "hourly": "temperature_2m,windspeed_10m,weathercode,precipitation,visibility",
+        "timezone": "auto",
+    }
+    try:
+        logger.info(f"Fetching historical weather for ({lat}, {lon}) on {query_date}")
+        resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        daily = data.get("daily", {})
+        hourly = data.get("hourly", {})
+
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        winds = hourly.get("windspeed_10m", [])
+        codes = hourly.get("weathercode", [])
+        precip = hourly.get("precipitation", [])
+        vis = hourly.get("visibility", [])
+
+        period_labels = ["Night (0-6h)", "Morning (6-12h)", "Afternoon (12-18h)", "Evening (18-24h)"]
+        hourly_breakdown = []
+        for block_idx in range(4):
+            i = block_idx * 6
+            block_temps = [t for t in temps[i:i+6] if t is not None]
+            block_winds = [w for w in winds[i:i+6] if w is not None]
+            block_precip = [p for p in precip[i:i+6] if p is not None]
+            block_vis = [v for v in vis[i:i+6] if v is not None]
+            block_code = codes[i] if i < len(codes) and codes[i] is not None else None
+            hourly_breakdown.append({
+                "period": period_labels[block_idx],
+                "avg_temp_c": round(sum(block_temps) / len(block_temps), 1) if block_temps else None,
+                "max_wind_kmh": round(max(block_winds), 1) if block_winds else None,
+                "total_precip_mm": round(sum(block_precip), 1) if block_precip else None,
+                "avg_visibility_m": int(sum(block_vis) / len(block_vis)) if block_vis else None,
+                "conditions": WMO_CODES.get(block_code, f"Code {block_code}") if block_code is not None else "Unknown",
+            })
+
+        daily_code = daily.get("weathercode", [None])[0]
+        return {
+            "source_api": "Open-Meteo Historical Archive",
+            "query_date": query_date,
+            "location": {"latitude": lat, "longitude": lon},
+            "daily_summary": {
+                "max_temp_c": daily.get("temperature_2m_max", [None])[0],
+                "min_temp_c": daily.get("temperature_2m_min", [None])[0],
+                "max_wind_kmh": daily.get("windspeed_10m_max", [None])[0],
+                "total_precip_mm": daily.get("precipitation_sum", [None])[0],
+                "conditions": WMO_CODES.get(daily_code, f"Code {daily_code}") if daily_code is not None else "Unknown",
+            },
+            "hourly_breakdown": hourly_breakdown,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching historical weather for ({lat}, {lon}) on {query_date}: {e}")
+        return None
 
 
 def fetch_weather_data(lat: float, lon: float) -> Optional[Dict[str, Any]]:
@@ -73,17 +149,22 @@ def fetch_weather_data(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         return None
 
 
-def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None, 
-                               lat: Optional[float] = None, lon: Optional[float] = None):
+def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None,
+                               lat: Optional[float] = None, lon: Optional[float] = None,
+                               query_date: Optional[str] = None):
     """
     Fetches weather data, wraps it in the standard envelope,
     and publishes it using the provided RedisBus instance.
+    If query_date (YYYY-MM-DD) is provided and is in the past, fetches historical data.
     """
     use_lat = lat if lat is not None else DEFAULT_LATITUDE
     use_lon = lon if lon is not None else DEFAULT_LONGITUDE
 
     try:
-        payload = fetch_weather_data(use_lat, use_lon)
+        if query_date:
+            payload = fetch_historical_weather(use_lat, use_lon, query_date)
+        else:
+            payload = fetch_weather_data(use_lat, use_lon)
         
         if payload:
             # Include task_id for correlation if provided
@@ -151,15 +232,14 @@ def query_listener(bus: RedisBus):
                 task_id = payload.get("task_id")
                 lat = payload.get("lat") or payload.get("latitude")
                 lon = payload.get("lon") or payload.get("longitude")
-                
-                # Use defaults if not provided
+                query_date = payload.get("date") or payload.get("query_date")
+
                 if lat is not None:
                     lat = float(lat)
                 if lon is not None:
                     lon = float(lon)
-                
-                # Process the query
-                fetch_and_publish_weather(bus, task_id=task_id, lat=lat, lon=lon)
+
+                fetch_and_publish_weather(bus, task_id=task_id, lat=lat, lon=lon, query_date=query_date)
                 
             except Exception as e:
                 logger.error(f"Error processing query message: {e}")
