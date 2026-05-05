@@ -4,7 +4,7 @@ frontend/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
+MAKE2026/
 # Python
 __pycache__/
 *.pyc

@@ -353,33 +353,47 @@ def dispatch_health_assessment(person_info: str, conditions: str = "") -> str:
     return f"Task dispatched to Health Agent: {task_id}"
 
 
-@tool  
-def dispatch_path_analysis(start_lat: float, start_lon: float, end_lat: float = None, end_lon: float = None) -> str:
+@tool
+def dispatch_path_analysis(
+    start_lat: float,
+    start_lon: float,
+    age: int = 35,
+    cognitive_state: float = 0.9,
+    physical_condition: float = 0.8,
+    has_vehicle: bool = False,
+) -> str:
     """
-    Dispatch a path/terrain analysis request.
-    
-    Use this when you need terrain analysis or route planning for the search area.
-    
+    Dispatch a path/terrain analysis request using Monte Carlo lost-person simulation.
+
+    Use this when you need to predict where a missing person may have traveled,
+    or to generate a probability heatmap for the search area.
+
     Args:
-        start_lat: Starting latitude
-        start_lon: Starting longitude
-        end_lat: Optional ending latitude (for route analysis)
-        end_lon: Optional ending longitude (for route analysis)
-        
+        start_lat: Last Known Position latitude
+        start_lon: Last Known Position longitude
+        age: Missing person's age in years (default 35)
+        cognitive_state: Cognitive alertness 0.0-1.0 (0=severely impaired/dementia, 1=fully alert)
+        physical_condition: Physical fitness 0.0-1.0 (0=poor, 1=excellent)
+        has_vehicle: True if the person may be motorized or on horseback
+
     Returns:
         task_id that can be used to track and retrieve results
     """
     from .task_tracker import get_tracker, get_agent_streams
-    
+
     tracker = get_tracker()
     input_stream, output_stream = get_agent_streams("path")
-    
+
     payload = {
         "start": {"lat": start_lat, "lon": start_lon},
-        "end": {"lat": end_lat, "lon": end_lon} if end_lat and end_lon else None,
-        "analysis_type": "route" if end_lat else "terrain",
+        "person": {
+            "age": age,
+            "cognitive_state": cognitive_state,
+            "physical_condition": physical_condition,
+            "has_vehicle": has_vehicle,
+        },
     }
-    
+
     task_id = tracker.submit_task(input_stream, output_stream, payload)
     return f"Task dispatched to Path Analysis Agent: {task_id}"
 

@@ -93,7 +93,8 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
-      - DO_VISUALIZE=false
+      - GRAPH_RADIUS_KM=5.0
+      - N_SIMULATIONS=200
     depends_on: [redis]
     networks:
       - sar-net

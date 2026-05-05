@@ -1,286 +1,203 @@
 import os
-import time
 import logging
-import threading
 import osmnx as ox
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Optional
 
 from shared import wrap_envelope, RedisBus
 
-from agents.path_analysis.dem_utils import *
-from agents.path_analysis.osm_utils import *
-from agents.path_analysis.pathing import * 
-from agents.path_analysis.llm import * 
+from agents.path_analysis.classifier import classify_person, parse_person_info
+from agents.path_analysis.simulation import run_monte_carlo, snap_to_graph
+from agents.path_analysis.probability_map import build_probability_map, get_top_points
+from agents.path_analysis.llm import summarize_results
 
 AGENT_NAME = os.getenv("AGENT_NAME", "path-analysis-agent")
-AGENT_VERSION = os.getenv("AGENT_VERSION", "1.2")
+AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 STREAM_NAME = "path.analysis.raw"
 QUERY_INPUT_STREAM = "path.query.raw"
 DEAD_LETTER_STREAM = "system.dead_letter"
 
-DEM_PATH = os.getenv("DEM_PATH", "agents/path_analysis/data/slo_dem.tif")
-START_LON = float(os.getenv("START_LON", "-120.6605"))
-START_LAT = float(os.getenv("START_LAT", "35.2980"))
-TOP_K = int(os.getenv("TOP_K", "3"))
-
-DO_VISUALIZE = os.getenv("DO_VISUALIZE", "true").lower() in {"1", "true", "yes"}
-UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))  # Default: 1 hour
-ENABLE_PERIODIC = os.getenv("ENABLE_PERIODIC", "false").lower() in {"1", "true", "yes"}
+GRAPH_RADIUS_KM = float(os.getenv("GRAPH_RADIUS_KM", "5.0"))
+N_SIMULATIONS = int(os.getenv("N_SIMULATIONS", "200"))
+TOP_N_RESULTS = int(os.getenv("TOP_N_RESULTS", "30"))
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(AGENT_NAME)
 
-# Cached graph data to avoid reloading for every query
-_cached_graph_data: Optional[Dict[str, Any]] = None
-_cache_lock = threading.Lock()
+
+def build_graph_from_lkp(lat: float, lon: float,
+                          radius_km: float = GRAPH_RADIUS_KM) -> ox.graph:
+    """Download OSM walk network centered on LKP, add elevation if available."""
+    logger.info(f"Downloading OSM graph ({radius_km} km radius) for ({lat:.5f}, {lon:.5f})...")
+    graph = ox.graph_from_point(
+        (lat, lon),
+        dist=radius_km * 1000,
+        network_type="walk",
+        simplify=True,
+    )
+
+    try:
+        graph = ox.elevation.add_node_elevations_google(graph)
+        logger.info("Elevation data added from Google.")
+    except Exception:
+        logger.info("Google elevation unavailable — using flat terrain.")
+        for node in graph.nodes:
+            graph.nodes[node]["elevation"] = 0.0
+
+    # Add projected coordinates for distance calculations in simulation
+    graph_proj = ox.project_graph(graph)
+    for node in graph_proj.nodes:
+        data = graph_proj.nodes[node]
+        graph.nodes[node]["proj_x"] = data.get("x", 0)
+        graph.nodes[node]["proj_y"] = data.get("y", 0)
+
+    logger.info(f"Graph loaded: {graph.number_of_nodes()} nodes, "
+                f"{graph.number_of_edges()} edges")
+    return graph
 
 
-def load_graph_data() -> Dict[str, Any]:
-    """Load and cache graph data for path computation."""
-    global _cached_graph_data
-    
-    with _cache_lock:
-        if _cached_graph_data is not None:
-            logger.info("Using cached graph data")
-            return _cached_graph_data
-        
-        logger.info("Loading DEM...")
-        elevation, transform, crs, bounds = load_dem(DEM_PATH)
+def run_path_analysis(bus: RedisBus, task_id: Optional[str],
+                      lat: float, lon: float,
+                      age: int = 35,
+                      cognitive_state: float = 0.9,
+                      physical_condition: float = 0.8,
+                      has_vehicle: bool = False,
+                      radius_km: float = GRAPH_RADIUS_KM,
+                      n_simulations: int = N_SIMULATIONS):
+    try:
+        # 1. Classify person → LPT profile
+        person_class, profile = classify_person(
+            age=age,
+            cognitive_state=cognitive_state,
+            physical_condition=physical_condition,
+            has_vehicle=has_vehicle,
+        )
+        logger.info(f"Person classified as: {profile.name}")
 
-        logger.info("Loading OSM graph from DEM bounds...")
-        north, south, east, west = bounds_to_latlon_bounds(bounds, crs)
-        G = load_osm_graph_from_bounds(north, south, east, west)
-        G = ox.project_graph(G, to_crs=crs)
+        # 2. Download OSM graph on demand (any lat/lon)
+        graph = build_graph_from_lkp(lat, lon, radius_km)
 
-        logger.info("Computing slope from DEM...")
-        slope = compute_slope_numpy(elevation, transform)
+        # 3. Snap LKP to nearest graph node
+        lkp_node = snap_to_graph(graph, lat, lon)
+        logger.info(f"LKP snapped to node {lkp_node}")
 
-        logger.info("Adding elevation and slope data to graph...")
-        ox.elevation.add_node_elevations_raster(G, filepath=DEM_PATH)
-        ox.elevation.add_edge_grades(G, add_absolute=True)
-        G = add_slope(G, slope, transform)
+        # 4. Monte Carlo simulation
+        logger.info(f"Running {n_simulations} Monte Carlo simulations...")
+        mc_results = run_monte_carlo(
+            graph=graph,
+            lkp_node=lkp_node,
+            profile=profile,
+            n_runs=n_simulations,
+            verbose=False,
+        )
 
-        logger.info("Adding Tobler hiking time and custom edge costs...")
-        G = add_tobler_time(G)
-        G = add_custom_edge_costs(G)
+        # 5. Build probability map
+        prob_map = build_probability_map(mc_results, graph)
+        top_points = get_top_points(prob_map, top_n=TOP_N_RESULTS)
+        logger.info(f"Probability map built: {len(top_points)} high-probability points")
 
-        logger.info("Tagging graph with SAR-relevant POIs...")
-        G = add_pois_to_graph(G, crs, (west, south, east, north))
-        
-        _cached_graph_data = {
-            "G": G,
-            "elevation": elevation,
-            "transform": transform,
-            "crs": crs,
-            "bounds": {"north": north, "south": south, "east": east, "west": west}
+        # 6. LLM summary
+        llm_summary = summarize_results(person_class, profile, top_points, lat, lon)
+
+        payload = {
+            "lkp": {"lat": lat, "lon": lon},
+            "person_class": person_class,
+            "person_profile": profile.name,
+            "search_radius_km": {
+                "p25": profile.search_radius_km[0],
+                "p50": profile.search_radius_km[1],
+                "p75": profile.search_radius_km[2],
+                "p95": profile.search_radius_km[3],
+            },
+            "n_simulations": n_simulations,
+            "probability_points": top_points,
+            "summary": llm_summary,
         }
-        
-        logger.info("Graph data loaded and cached")
-        return _cached_graph_data
-
-
-def compute_paths_payload(start_lon: Optional[float] = None, 
-                          start_lat: Optional[float] = None,
-                          end_lon: Optional[float] = None,
-                          end_lat: Optional[float] = None,
-                          top_k: Optional[int] = None) -> Dict[str, Any]:
-    """Compute paths with optional custom start/end points."""
-    
-    use_start_lon = start_lon if start_lon is not None else START_LON
-    use_start_lat = start_lat if start_lat is not None else START_LAT
-    use_top_k = top_k if top_k is not None else TOP_K
-    
-    # Load graph data (uses cache if available)
-    graph_data = load_graph_data()
-    G = graph_data["G"]
-    elevation = graph_data["elevation"]
-    transform = graph_data["transform"]
-    crs = graph_data["crs"]
-    bounds = graph_data["bounds"]
-
-    logger.info(f"Planning paths from start (lon={use_start_lon}, lat={use_start_lat})...")
-    
-    if end_lon is not None and end_lat is not None:
-        # Single path to specific destination
-        # TODO: Implement single destination path computation
-        logger.warning("Specific end point not yet supported, using POI-based routing")
-    
-    paths = plan_paths_to_all_pois_from_latlon_with_edges(G, use_start_lon, use_start_lat, crs)
-    top_paths = sorted(paths, key=lambda x: x[3])[:use_top_k]
-
-    logger.info("Extracting path metadata...")
-    path_data = extract_paths_metadata(G, top_paths, crs)
-
-    if DO_VISUALIZE:
-        logger.info("Visualizing graph & terrain (DO_VISUALIZE=true)...")
-        visualize_graph_with_array(
-            G,
-            raster_array=elevation,
-            transform=transform,
-            title="OSM Graph with Top SAR Paths",
-            paths=top_paths,
-        )
-
-    logger.info("Summarizing top paths with LLM...")
-    try:
-        llm_summary = summarize_multiple_paths_with_llm(path_data)
-    except Exception as e:
-        logger.warning(f"LLM summary failed: {e}. Using fallback summary.")
-        llm_summary = "Path analysis completed successfully. LLM summary unavailable due to API key issues."
-
-    final_data = prepare_path_for_redis(path_data, llm_summary)
-
-    payload = {
-        "source": {
-            "dem_path": DEM_PATH,
-            "bounds_latlon": bounds,
-        },
-        "start": {"lon": use_start_lon, "lat": use_start_lat},
-        "top_k": use_top_k,
-        "results": final_data,
-    }
-    return payload
-
-
-def run_and_publish_path_analysis(bus: RedisBus, task_id: Optional[str] = None,
-                                   start_lon: Optional[float] = None,
-                                   start_lat: Optional[float] = None,
-                                   end_lon: Optional[float] = None,
-                                   end_lat: Optional[float] = None,
-                                   top_k: Optional[int] = None):
-    """Run path analysis and publish results."""
-    try:
-        payload = compute_paths_payload(
-            start_lon=start_lon,
-            start_lat=start_lat,
-            end_lon=end_lon,
-            end_lat=end_lat,
-            top_k=top_k
-        )
-        
-        # Include task_id for correlation
         if task_id:
             payload["task_id"] = task_id
 
-        message_to_publish = wrap_envelope(
+        bus.publish(wrap_envelope(
             payload=payload,
             source_name=AGENT_NAME,
             source_version=AGENT_VERSION,
             target_stream=STREAM_NAME,
-        )
-        bus.publish(message_to_publish)
-        logger.info(f"Published path-analysis results to stream: {STREAM_NAME}" +
-                   (f" (task_id: {task_id})" if task_id else ""))
+        ))
+        logger.info(f"Published results to {STREAM_NAME}"
+                    + (f" (task_id: {task_id})" if task_id else ""))
 
     except Exception as e:
-        logger.error(f"An unhandled error occurred: {e}", exc_info=True)
+        logger.error(f"Path analysis failed: {e}", exc_info=True)
         error_payload = {
             "failed_agent": f"{AGENT_NAME}:{AGENT_VERSION}",
             "error_message": str(e),
             "error_type": type(e).__name__,
-            "context": f"Failed while computing paths for DEM={DEM_PATH}",
         }
         if task_id:
             error_payload["task_id"] = task_id
-            
-        error_message = wrap_envelope(
+
+        bus.publish(wrap_envelope(
             payload=error_payload,
             source_name=AGENT_NAME,
             source_version=AGENT_VERSION,
             target_stream=DEAD_LETTER_STREAM,
-        )
-        bus.publish(error_message)
-
-
-def periodic_publisher(bus: RedisBus):
-    """Background thread for periodic path analysis (if enabled)."""
-    logger.info(f"Periodic publisher started. Interval: {UPDATE_INTERVAL_SECONDS}s")
-    while True:
-        logger.info("Starting periodic path analysis cycle.")
-        run_and_publish_path_analysis(bus)
-        logger.info(f"Cycle complete. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
-        time.sleep(UPDATE_INTERVAL_SECONDS)
+        ))
 
 
 def query_listener(bus: RedisBus):
-    """Listen for on-demand path analysis queries via path.query.raw stream."""
-    logger.info(f"Query listener started. Listening on: {QUERY_INPUT_STREAM}")
-    
-    try:
-        for message in bus.subscribe(
-            group_name=f"{AGENT_NAME}-query-group",
-            consumer_name=f"{AGENT_NAME}-query-consumer",
-            streams=[QUERY_INPUT_STREAM],
-            block_ms=5000
-        ):
-            try:
-                payload = message.payload
-                logger.info(f"Received path analysis query: {payload}")
-                
-                # Extract parameters
-                task_id = payload.get("task_id")
-                
-                # Support both array format [lat, lon] and separate fields
-                start = payload.get("start")
-                end = payload.get("end")
-                
-                start_lat = start_lon = end_lat = end_lon = None
-                
-                if start:
-                    if isinstance(start, list) and len(start) == 2:
-                        start_lat, start_lon = start
-                    elif isinstance(start, dict):
-                        start_lat = start.get("lat")
-                        start_lon = start.get("lon")
-                
-                if end:
-                    if isinstance(end, list) and len(end) == 2:
-                        end_lat, end_lon = end
-                    elif isinstance(end, dict):
-                        end_lat = end.get("lat")
-                        end_lon = end.get("lon")
-                
-                # Also check direct lat/lon fields
-                if start_lat is None:
-                    start_lat = payload.get("start_lat")
-                if start_lon is None:
-                    start_lon = payload.get("start_lon")
-                    
-                top_k = payload.get("top_k")
-                
-                # Convert to float if provided
-                if start_lat is not None:
-                    start_lat = float(start_lat)
-                if start_lon is not None:
-                    start_lon = float(start_lon)
-                if end_lat is not None:
-                    end_lat = float(end_lat)
-                if end_lon is not None:
-                    end_lon = float(end_lon)
-                if top_k is not None:
-                    top_k = int(top_k)
-                
-                # Process the query
-                run_and_publish_path_analysis(
-                    bus, 
-                    task_id=task_id,
-                    start_lon=start_lon,
-                    start_lat=start_lat,
-                    end_lon=end_lon,
-                    end_lat=end_lat,
-                    top_k=top_k
-                )
-                
-            except Exception as e:
-                logger.error(f"Error processing query message: {e}")
-                
-    except Exception as e:
-        logger.error(f"Query listener error: {e}")
+    logger.info(f"Query listener started on: {QUERY_INPUT_STREAM}")
+
+    for message in bus.subscribe(
+        group_name=f"{AGENT_NAME}-query-group",
+        consumer_name=f"{AGENT_NAME}-query-consumer",
+        streams=[QUERY_INPUT_STREAM],
+        block_ms=5000,
+    ):
+        try:
+            payload = message.payload
+            logger.info(f"Received path analysis query: {payload}")
+
+            task_id = payload.get("task_id")
+
+            # Extract lat/lon — support both nested and flat formats
+            start = payload.get("start") or {}
+            if isinstance(start, list) and len(start) == 2:
+                lat, lon = float(start[0]), float(start[1])
+            elif isinstance(start, dict):
+                lat = float(start.get("lat", 0))
+                lon = float(start.get("lon", 0))
+            else:
+                lat = float(payload.get("start_lat", 0))
+                lon = float(payload.get("start_lon", 0))
+
+            if lat == 0 and lon == 0:
+                logger.warning("Received path query with no valid coordinates, skipping.")
+                continue
+
+            # Extract person info
+            person = parse_person_info(payload)
+
+            radius_km = float(payload.get("radius_km", GRAPH_RADIUS_KM))
+            n_simulations = int(payload.get("n_simulations", N_SIMULATIONS))
+
+            run_path_analysis(
+                bus=bus,
+                task_id=task_id,
+                lat=lat,
+                lon=lon,
+                age=person["age"],
+                cognitive_state=person["cognitive_state"],
+                physical_condition=person["physical_condition"],
+                has_vehicle=person["has_vehicle"],
+                radius_km=radius_km,
+                n_simulations=n_simulations,
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing query message: {e}", exc_info=True)
 
 
 def main():
@@ -289,27 +206,10 @@ def main():
     try:
         bus = RedisBus(REDIS_URL)
     except Exception as e:
-        logger.critical(f"Failed to connect to Redis, cannot start agent. Error: {e}")
-        return 
+        logger.critical(f"Failed to connect to Redis: {e}")
+        return
 
-    logger.info(f"{AGENT_NAME} starting up.")
-    
-    # Pre-load graph data on startup (expensive operation)
-    logger.info("Pre-loading graph data...")
-    try:
-        load_graph_data()
-    except Exception as e:
-        logger.error(f"Failed to pre-load graph data: {e}")
-    
-    # Start periodic publisher in background thread (if enabled)
-    if ENABLE_PERIODIC:
-        periodic_thread = threading.Thread(target=periodic_publisher, args=(bus,), daemon=True)
-        periodic_thread.start()
-    else:
-        logger.info("Periodic publishing disabled. Running initial analysis...")
-        run_and_publish_path_analysis(bus)
-    
-    # Run query listener in main thread
+    logger.info("Ready. Waiting for queries on path.query.raw ...")
     query_listener(bus)
 
 
