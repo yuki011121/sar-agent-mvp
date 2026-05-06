@@ -11,6 +11,11 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+"""
+The purpose of this script is to embedd the extracted chunks into the SAR collection in Qdrant
+I'm assuming when this script is run, that it is being run from this directory
+"""
+
 load_dotenv()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_ADMIN_KEY = os.getenv("QDRANT_API_ADMIN_KEY", None)
