@@ -9,14 +9,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+"""
+The purpose of this script is to embedd the extracted chunks into the SAR collection in Qdrant
+I'm assuming when this script is run, that it is being run from this directory
+"""
+
 QDRANT_API_ADMIN_KEY = os.getenv("QDRANT_API_ADMIN_KEY", None)
 client = QdrantClient(url="http://localhost:6333",
                       api_key=QDRANT_API_ADMIN_KEY)
-COLLECTION_NAME = "SAR_collection"
+COLLECTION_NAME = "SAR_context"
 VECTOR_SIZE = 384  # vector size for model all-MiniLM-L6-v2
 EXTRACTED_FILE_PATHS = [
-                        # "./example.json"
-                        # "path/to/extracted_chunks.json",
+                        "./data/extracted_categories.json",
+                        "./data/extracted_pages.json",
                         ]
 
 def create_collection():
