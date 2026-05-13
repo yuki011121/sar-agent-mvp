@@ -13,12 +13,99 @@ export interface AttachedFile {
   preview?: string; // data URL for images
 }
 
+export interface ClueMeisterClaim {
+  claim_id: string;
+  agent: string;
+  claim_type: string;
+  subject_type: string;
+  predicted_value: string;
+  stated_confidence: number;
+  decision: { tier: string; final_confidence: number; recommendation: string; evidence_summary: string };
+  contradiction: { has_contradiction: boolean; explanation: string };
+  grounding: { is_grounded: boolean; kg_probability: number | null; hop_type: string; sample_count: number };
+}
+
+export interface ClueMeisterSearchArea {
+  name: string;
+  priority: string;
+  rationale: string;
+  confidence: number;
+}
+
+export interface ClueMeisterConflict {
+  type: string;
+  description: string;
+  agent?: string;
+  blocking: boolean;
+}
+
+export interface ClueMeisterBrief {
+  headline: string;
+  confidence: number;
+  top_search_areas: ClueMeisterSearchArea[];
+  urgent_conflicts: ClueMeisterConflict[];
+  llm_summary: string;
+}
+
+export interface ClueMeisterClueMapNode {
+  id: string;
+  type: string;
+  label: string;
+  confidence: number;
+  sources: string[];
+}
+
+export interface ClueMeisterClueMapEdge {
+  source: string;
+  target: string;
+  type: string;
+  confidence: number;
+}
+
+export interface ClueMeisterResult {
+  session_id: string;
+  status: string;
+  // Layer 1 — incident commander brief
+  brief?: ClueMeisterBrief;
+  // Layer 2 — graph data
+  clue_map?: { nodes: ClueMeisterClueMapNode[]; edges: ClueMeisterClueMapEdge[] };
+  // Layer 3 — per-claim ISRID verification
+  verification?: {
+    summary: {
+      total_claims: number;
+      tier_distribution: Record<string, number>;
+      agents_analyzed: string[];
+      grounding_rate?: number;
+    };
+    claims: ClueMeisterClaim[];
+  };
+}
+
+export interface PathPoint {
+  lat: number;
+  lon: number;
+  endpoint_probability: number;
+  visit_density: number;
+  rank: number;
+}
+
+export interface PathData {
+  lkp: { lat: number; lon: number } | null;
+  probability_points: PathPoint[];
+  person_class?: string;
+  person_profile?: string;
+  search_radius_km?: { p25: number; p50: number; p75: number; p95: number };
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
   agents?: string[]; // which agents contributed
   streaming?: boolean;
+  isClueMeister?: boolean;
+  clueMeisterData?: ClueMeisterResult;
+  pathData?: PathData;
 }
 
 const SESSION_KEY = "sar_session_id";
@@ -34,6 +121,8 @@ export default function ChatPage() {
   ]);
   const [sessionId, setSessionId] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [hasAgentResponse, setHasAgentResponse] = useState(false);
+  const [isClueMeisterLoading, setIsClueMeisterLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -107,6 +196,7 @@ export default function ChatPage() {
         let buffer = "";
         let finalContent = "";
         let agentsContributed: string[] = [];
+        let pendingPathData: PathData | null = null;
         // SSE state: track current event type across lines
         let currentEvent = "message";
         let currentDataLines: string[] = [];
@@ -124,14 +214,27 @@ export default function ChatPage() {
               )
             );
           } else if (eventType === "agent_result") {
+            setHasAgentResponse(true);
             const match = data.match(/^\*\*(.+?)\*\*/);
             if (match) agentsContributed.push(match[1]);
+          } else if (eventType === "path_data") {
+            try {
+              pendingPathData = JSON.parse(data) as PathData;
+            } catch {
+              // ignore malformed path_data
+            }
           } else if (eventType === "final") {
             finalContent = data;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantId
-                  ? { ...m, content: finalContent, streaming: false, agents: agentsContributed }
+                  ? {
+                      ...m,
+                      content: finalContent,
+                      streaming: false,
+                      agents: agentsContributed,
+                      ...(pendingPathData ? { pathData: pendingPathData } : {}),
+                    }
                   : m
               )
             );
@@ -211,6 +314,59 @@ export default function ChatPage() {
     }
   };
 
+  const handleClueMeisterAnalysis = async () => {
+    if (!sessionId || isClueMeisterLoading) return;
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    const loadingId = uuidv4();
+
+    setIsClueMeisterLoading(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: loadingId,
+        role: "assistant",
+        content: "Analyzing…",
+        isClueMeister: true,
+        streaming: true,
+      },
+    ]);
+
+    try {
+      const res = await fetch(`${apiBase}/clue-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.detail || "ClueMeister request failed");
+      }
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === loadingId
+            ? {
+                ...m,
+                content: "",
+                streaming: false,
+                clueMeisterData: json.result ?? null,
+              }
+            : m
+        )
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === loadingId
+            ? { ...m, content: `ClueMeister error: ${msg}`, streaming: false }
+            : m
+        )
+      );
+    } finally {
+      setIsClueMeisterLoading(false);
+    }
+  };
+
   const handleStop = () => {
     abortRef.current?.abort();
     setIsStreaming(false);
@@ -232,6 +388,15 @@ export default function ChatPage() {
         </div>
         <div className="flex items-center gap-3">
           <AgentStatusBar />
+          {hasAgentResponse && !isStreaming && (
+            <button
+              onClick={handleClueMeisterAnalysis}
+              disabled={isClueMeisterLoading}
+              className="text-xs px-3 py-1.5 rounded border border-sar-orange text-sar-orange hover:bg-sar-orange/20 disabled:opacity-50 disabled:cursor-wait transition-colors"
+            >
+              {isClueMeisterLoading ? "Analyzing…" : "Run ClueMeister Analysis"}
+            </button>
+          )}
           <button
             onClick={handleNewSession}
             className="text-xs px-3 py-1.5 rounded border border-sar-border text-sar-muted hover:text-sar-text hover:border-sar-orange transition-colors"

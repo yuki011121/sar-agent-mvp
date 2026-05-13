@@ -98,45 +98,49 @@ class Relation:
 class KnowledgeGraph:
     """Search and rescue knowledge graph using Neo4j"""
     
-    def __init__(self, neo4j_uri: str = None, 
+    def __init__(self, neo4j_uri: str = None,
                  neo4j_user: str = None, neo4j_password: str = None):
         """
-        Initialize knowledge graph with Neo4j
-        
-        Args:
-            neo4j_uri: Neo4j connection URI (e.g., 'bolt://localhost:7687')
-            neo4j_user: Neo4j username
-            neo4j_password: Neo4j password
+        Initialize knowledge graph.  Neo4j is optional — falls back to in-memory
+        dicts if the driver is unavailable or the connection fails.
         """
+        # In-memory fallback storage (always initialised)
+        self._in_memory_entities: Dict[str, 'Entity'] = {}
+        self._in_memory_relations: Dict[str, 'Relation'] = {}
+        self.entity_counter = 0
+        self.relation_counter = 0
+
         if not NEO4J_AVAILABLE:
-            raise ImportError("Neo4j driver not available. Install with: pip install neo4j")
-        
-        # Neo4j connection
+            logger.warning("Neo4j driver not installed. Running in in-memory fallback mode.")
+            self.neo4j_driver = None
+            return
+
         uri = neo4j_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         user = neo4j_user or os.getenv("NEO4J_USER", "neo4j")
         password = neo4j_password or os.getenv("NEO4J_PASSWORD", "password")
-        
+
         try:
             self.neo4j_driver = GraphDatabase.driver(uri, auth=(user, password))
-            logger.info(f"Connected to Neo4j at {uri}")
-            
-            # Verify connection
             with self.neo4j_driver.session() as session:
                 session.run("RETURN 1")
+            logger.info(f"Connected to Neo4j at {uri}")
         except Exception as e:
-            logger.error(f"Failed to connect to Neo4j: {e}")
-            raise ConnectionError(f"Failed to connect to Neo4j at {uri}: {e}")
-        
-        self.entity_counter = 0
-        self.relation_counter = 0
+            logger.warning(f"Neo4j unavailable ({e}). Falling back to in-memory mode.")
+            self.neo4j_driver = None
+
+    @property
+    def neo4j_available(self) -> bool:
+        return self.neo4j_driver is not None
         
     def add_entity(self, entity: Entity) -> str:
-        """Add entity to Neo4j graph"""
+        """Add entity to graph (Neo4j if available, else in-memory)."""
+        self._in_memory_entities[entity.id] = entity
+        if self.neo4j_driver is None:
+            return entity.id
         return self._add_entity_to_neo4j(entity)
-    
+
     def _add_entity_to_neo4j(self, entity: Entity) -> str:
         """Add entity to Neo4j database"""
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Convert properties to Neo4j-friendly format
@@ -169,12 +173,14 @@ class KnowledgeGraph:
             raise
     
     def add_relation(self, relation: Relation) -> str:
-        """Add relation to Neo4j graph"""
+        """Add relation to graph (Neo4j if available, else in-memory)."""
+        self._in_memory_relations[relation.id] = relation
+        if self.neo4j_driver is None:
+            return relation.id
         return self._add_relation_to_neo4j(relation)
-    
+
     def _add_relation_to_neo4j(self, relation: Relation) -> str:
         """Add relation to Neo4j database"""
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Convert relation type to Neo4j-friendly format (uppercase, no spaces)
@@ -209,11 +215,20 @@ class KnowledgeGraph:
             logger.error(f"Failed to add relation to Neo4j: {e}")
             raise
     
-    def find_entities(self, entity_type: EntityType = None, 
+    def find_entities(self, entity_type: EntityType = None,
                      properties: Dict[str, Any] = None) -> List[Entity]:
-        """Find entities using Cypher query"""
+        """Find entities (in-memory fallback when Neo4j is unavailable)."""
+        if self.neo4j_driver is None:
+            results = []
+            for e in self._in_memory_entities.values():
+                if entity_type and e.type != entity_type:
+                    continue
+                if properties and not all(e.properties.get(k) == v for k, v in properties.items()):
+                    continue
+                results.append(e)
+            return results
+
         results = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Build Cypher query
@@ -264,9 +279,20 @@ class KnowledgeGraph:
     def find_relations(self, relation_type: RelationType = None,
                       source_entity: str = None,
                       target_entity: str = None) -> List[Relation]:
-        """Find relations using Cypher query"""
+        """Find relations (in-memory fallback when Neo4j is unavailable)."""
+        if self.neo4j_driver is None:
+            results = []
+            for r in self._in_memory_relations.values():
+                if relation_type and r.type != relation_type:
+                    continue
+                if source_entity and r.source_entity != source_entity:
+                    continue
+                if target_entity and r.target_entity != target_entity:
+                    continue
+                results.append(r)
+            return results
+
         results = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Build Cypher query
@@ -333,11 +359,24 @@ class KnowledgeGraph:
         
         return results
     
-    def get_entity_neighbors(self, entity_id: str, 
+    def get_entity_neighbors(self, entity_id: str,
                            relation_types: List[RelationType] = None) -> List[Tuple[Entity, Relation]]:
-        """Get entity neighbors and relations using Cypher query"""
+        """Get entity neighbors (in-memory fallback when Neo4j is unavailable)."""
+        if self.neo4j_driver is None:
+            neighbors = []
+            for r in self._in_memory_relations.values():
+                if relation_types and r.type not in relation_types:
+                    continue
+                neighbor_id = None
+                if r.source_entity == entity_id:
+                    neighbor_id = r.target_entity
+                elif r.target_entity == entity_id:
+                    neighbor_id = r.source_entity
+                if neighbor_id and neighbor_id in self._in_memory_entities:
+                    neighbors.append((self._in_memory_entities[neighbor_id], r))
+            return neighbors
+
         neighbors = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Build relation type filter
@@ -408,11 +447,13 @@ class KnowledgeGraph:
         
         return neighbors
     
-    def find_paths(self, source_entity: str, target_entity: str, 
+    def find_paths(self, source_entity: str, target_entity: str,
                   max_length: int = 3) -> List[List[str]]:
-        """Find paths between two entities using Cypher"""
+        """Find paths between entities (returns [] when Neo4j unavailable)."""
+        if self.neo4j_driver is None:
+            return []
+
         paths = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 query = """
@@ -434,7 +475,11 @@ class KnowledgeGraph:
         return paths
     
     def calculate_entity_importance(self, entity_id: str) -> float:
-        """Calculate entity importance score using Neo4j"""
+        """Calculate entity importance (in-memory fallback returns confidence score)."""
+        if self.neo4j_driver is None:
+            entity = self._in_memory_entities.get(entity_id)
+            return entity.confidence if entity else 0.0
+
         try:
             with self.neo4j_driver.session() as session:
                 # Get entity
@@ -491,9 +536,11 @@ class KnowledgeGraph:
             return 0.0
     
     def find_clusters(self) -> List[List[str]]:
-        """Find entity clusters using Neo4j (weakly connected components)"""
+        """Find entity clusters (returns [] when Neo4j unavailable)."""
+        if self.neo4j_driver is None:
+            return []
+
         clusters = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Find weakly connected components
@@ -542,9 +589,11 @@ class KnowledgeGraph:
         return clusters
     
     def extract_timeline(self) -> List[Dict[str, Any]]:
-        """Extract timeline from Neo4j"""
+        """Extract timeline (returns [] when Neo4j unavailable)."""
+        if self.neo4j_driver is None:
+            return []
+
         timeline = []
-        
         try:
             with self.neo4j_driver.session() as session:
                 query = """
@@ -571,7 +620,21 @@ class KnowledgeGraph:
         return timeline
     
     def generate_insights(self) -> Dict[str, Any]:
-        """Generate insights from Neo4j"""
+        """Generate insights (in-memory fallback when Neo4j unavailable)."""
+        if self.neo4j_driver is None:
+            from collections import Counter as _Counter
+            type_counts = _Counter(e.type.value for e in self._in_memory_entities.values())
+            rel_counts = _Counter(r.type.value for r in self._in_memory_relations.values())
+            return {
+                "total_entities": len(self._in_memory_entities),
+                "total_relations": len(self._in_memory_relations),
+                "entity_types": dict(type_counts),
+                "relation_types": dict(rel_counts),
+                "clusters": 0,
+                "timeline_events": 0,
+                "most_important_entities": [],
+            }
+
         insights = {
             "total_entities": 0,
             "total_relations": 0,
@@ -581,7 +644,7 @@ class KnowledgeGraph:
             "timeline_events": len(self.extract_timeline()),
             "most_important_entities": []
         }
-        
+
         try:
             with self.neo4j_driver.session() as session:
                 # Count entities
@@ -641,10 +704,18 @@ class KnowledgeGraph:
         return insights
     
     def export_graph(self) -> Dict[str, Any]:
-        """Export graph data from Neo4j"""
+        """Export graph data (in-memory fallback when Neo4j unavailable)."""
+        if self.neo4j_driver is None:
+            from dataclasses import asdict as _asdict
+            return {
+                "entities": {eid: _asdict(e) for eid, e in self._in_memory_entities.items()},
+                "relations": {rid: _asdict(r) for rid, r in self._in_memory_relations.items()},
+                "insights": self.generate_insights(),
+                "export_timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+
         entities_dict = {}
         relations_dict = {}
-        
         try:
             with self.neo4j_driver.session() as session:
                 # Export all entities
@@ -718,7 +789,26 @@ class KnowledgeGraph:
             EntityType.TERRAIN: "#87CEEB"
         }
         
-        # Build nodes and edges from Neo4j
+        # Build nodes and edges from Neo4j (or in-memory)
+        if self.neo4j_driver is None:
+            from dataclasses import asdict as _asdict
+            for e in self._in_memory_entities.values():
+                nodes.append({
+                    "id": e.id, "label": e.name[:30], "type": e.type.value,
+                    "size": max(10, min(50, e.confidence * 50 + 10)),
+                    "color": type_colors.get(e.type, "#CCCCCC"),
+                    "confidence": e.confidence, "properties": e.properties, "source": e.source,
+                })
+            for r in self._in_memory_relations.values():
+                edges.append({
+                    "id": r.id, "source": r.source_entity, "target": r.target_entity,
+                    "label": r.type.value.replace("_", " ").title(), "type": r.type.value,
+                    "confidence": r.confidence, "width": max(1, r.confidence * 5), "properties": r.properties,
+                })
+            return {"nodes": nodes, "edges": edges,
+                    "metadata": {"total_nodes": len(nodes), "total_edges": len(edges),
+                                 "export_timestamp": datetime.utcnow().isoformat() + "Z", "format": output_format}}
+
         try:
             with self.neo4j_driver.session() as session:
                 # Get all entities
@@ -906,8 +996,8 @@ class KnowledgeGraph:
         return self.find_entities()
     
     def close(self):
-        """Close Neo4j connection if open"""
-        if self.neo4j_driver:
+        """Close Neo4j connection if open."""
+        if self.neo4j_driver is not None:
             self.neo4j_driver.close()
             logger.info("Neo4j connection closed")
     

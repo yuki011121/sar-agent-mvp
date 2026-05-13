@@ -2,28 +2,28 @@ FROM python:3.10-slim
 
 WORKDIR /workspace
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
 RUN pip install --no-cache-dir \
-    openai \
+    google-generativeai \
     redis \
     python-dotenv \
     neo4j \
     plotly \
-    kaleido
+    kaleido \
+    pandas \
+    numpy \
+    scipy
 
-# Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
 
-# Copy agent code
 COPY agents/cluemeister ./agents/cluemeister
 COPY agents/base_agent.py ./agents/base_agent.py
 
-# Set environment
+RUN mkdir -p /workspace/agents/cluemeister/data
+COPY agents/MAKE2026/data/processed/probability_kg.json \
+     /workspace/agents/cluemeister/data/probability_kg.json
+
 ENV PYTHONPATH=/workspace
 ENV REDIS_URL=redis://redis:6379
 

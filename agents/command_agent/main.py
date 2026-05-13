@@ -60,13 +60,18 @@ class CommandAgent:
     def __init__(self):
         self.bus = RedisBus(REDIS_URL)
         self.redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        self.last_id = "0"  # Track last processed message ID
         self.current_session_id = None  # Current session for interactive mode
-        
+
         # Verify Redis connection
         self.redis_client.ping()
+
+        # Start from the current tip of the stream so stale queued messages
+        # from previous sessions are not replayed on restart.
+        tip = self.redis_client.xrevrange(INPUT_STREAM, count=1)
+        self.last_id = tip[0][0] if tip else "$"
+
         logger.info(f"✓ Redis connected at {REDIS_URL}")
-        logger.info(f"✓ {AGENT_NAME} {AGENT_VERSION} initialized")
+        logger.info(f"✓ {AGENT_NAME} {AGENT_VERSION} initialized (last_id={self.last_id})")
     
     def process_query(self, query: str, session_id: Optional[str] = None,
                       file_urls: Optional[list] = None, verbose: bool = False) -> str:
@@ -97,7 +102,8 @@ class CommandAgent:
 
     def publish_response(self, query_id: str, query: str, response: str,
                          session_id: Optional[str] = None,
-                         agents_used: Optional[list] = None):
+                         agents_used: Optional[list] = None,
+                         path_data: Optional[dict] = None):
         """Publish response to output stream."""
         payload = {
             "query_id": query_id,
@@ -108,6 +114,8 @@ class CommandAgent:
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "agent_version": AGENT_VERSION,
         }
+        if path_data:
+            payload["path_data"] = path_data
         
         message = wrap_envelope(
             payload=payload,
@@ -174,19 +182,32 @@ class CommandAgent:
                             query, session_id=session_id, file_urls=file_urls
                         )
 
-                        # Retrieve which agents were dispatched from graph state
+                        # Retrieve agents + path_data from graph state
                         agents_used: list = []
+                        path_data: Optional[dict] = None
                         try:
                             config = {"configurable": {"thread_id": session_id or "default"}}
                             final_state = sar_graph.get_state(config)
                             if final_state:
                                 agents_used = final_state.values.get("dispatched_to", []) or []
+                                task_results = final_state.values.get("task_results") or {}
+                                for result in task_results.values():
+                                    if isinstance(result, dict) and "probability_points" in result:
+                                        path_data = {
+                                            "lkp": result.get("lkp"),
+                                            "probability_points": result["probability_points"],
+                                            "person_class": result.get("person_class"),
+                                            "person_profile": result.get("person_profile"),
+                                            "search_radius_km": result.get("search_radius_km"),
+                                        }
+                                        break
                         except Exception as _e:
-                            logger.debug(f"Could not retrieve dispatched_to from state: {_e}")
+                            logger.debug(f"Could not retrieve state: {_e}")
 
                         self.publish_response(
                             query_id, query, response,
-                            session_id=session_id, agents_used=agents_used
+                            session_id=session_id, agents_used=agents_used,
+                            path_data=path_data,
                         )
                         
                         # Update last processed ID

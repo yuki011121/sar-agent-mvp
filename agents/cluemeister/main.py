@@ -15,9 +15,10 @@ from dataclasses import asdict
 from dotenv import load_dotenv
 
 from knowledge_graph import (
-    KnowledgeGraph, ClueMeisterGraphBuilder, 
+    KnowledgeGraph, ClueMeisterGraphBuilder,
     EntityType, RelationType, Entity, Relation
 )
+from verification import SARVerificationEngine
 
 from knowledge_grounding import KnowledgeGrounding
 
@@ -52,6 +53,8 @@ INPUT_STREAMS = [
 
 OUTPUT_STREAM = "cluemeister.analysis.raw"
 DEAD_LETTER_STREAM = "system.dead_letter"
+TRIGGER_STREAM = "clue.query.raw"
+INPUT_STREAMS_WITH_TRIGGER = INPUT_STREAMS + [TRIGGER_STREAM]
 
 # Setup logging
 logging.basicConfig(
@@ -105,7 +108,13 @@ class ClueMeisterAgent:
         # Data cache
         self.recent_data = {}
         self.analysis_history = []
-        
+
+        # Session buffer for on-demand verification
+        self.session_buffer: Dict[str, List[Dict[str, Any]]] = {}
+        self._session_buffer_timestamps: Dict[str, float] = {}
+        self.session_buffer_ttl: int = int(os.getenv("SESSION_BUFFER_TTL", 3600))
+        self.verification_engine = SARVerificationEngine(gemini_model=self.gemini_model)
+
         logger.info(f"ClueMeister Agent initialized with knowledge graph")
     
     def ask_llm(self, prompt: str, system_message: str = None) -> Optional[str]:
@@ -896,7 +905,7 @@ class ClueMeisterAgent:
                     })
             
             # Use LLM for deep analysis
-            if self.openai_client and correlations:
+            if self.gemini_model and correlations:
                 llm_analysis = self._llm_correlation_analysis(correlations)
                 correlations["llm_insights"] = llm_analysis
             
@@ -1043,7 +1052,7 @@ class ClueMeisterAgent:
                         })
             
             # Use LLM to generate comprehensive recommendations
-            if self.openai_client:
+            if self.gemini_model:
                 llm_recommendations = self._llm_generate_recommendations(recommendations, insights)
                 recommendations["llm_recommendations"] = llm_recommendations
             
@@ -1180,6 +1189,275 @@ class ClueMeisterAgent:
                 "processed_at": datetime.utcnow().isoformat() + "Z"
             }
 
+    # -------------------------------------------------------------------------
+    # Session buffer helpers
+    # -------------------------------------------------------------------------
+
+    def _extract_text_from_payload(self, data: Dict[str, Any]) -> str:
+        for key in ("response", "analysis", "summary", "assessment", "content", "message", "text"):
+            if isinstance(data.get(key), str) and data[key].strip():
+                return data[key][:3000]
+        return json.dumps(data)[:3000]
+
+    def _evict_stale_sessions(self) -> None:
+        now = time.time()
+        stale = [sid for sid, ts in self._session_buffer_timestamps.items()
+                 if now - ts > self.session_buffer_ttl]
+        for sid in stale:
+            self.session_buffer.pop(sid, None)
+            self._session_buffer_timestamps.pop(sid, None)
+
+    def buffer_agent_output(self, session_id: str, agent_name: str,
+                            stream_name: str, data: Dict[str, Any]) -> None:
+        text = self._extract_text_from_payload(data)
+        if not text:
+            return
+        entry = {"agent": agent_name, "stream": stream_name, "text": text,
+                 "timestamp": datetime.utcnow().isoformat() + "Z"}
+        self.session_buffer.setdefault(session_id, []).append(entry)
+        self._session_buffer_timestamps[session_id] = time.time()
+        self._evict_stale_sessions()
+
+    def build_brief(
+        self,
+        verification: Dict[str, Any],
+        correlations: Dict[str, Any],
+        recommendations: Dict[str, Any],
+        agent_outputs: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Strategist layer: synthesise verification + correlations + recommendations
+        into an incident-commander-facing brief.
+        """
+        # Top search areas (up to 3) from recommendations
+        top_areas = []
+        for area in (recommendations.get("search_priorities") or [])[:3]:
+            top_areas.append({
+                "name":     area.get("area", "Unknown area"),
+                "priority": area.get("priority", "UNKNOWN"),
+                "rationale": area.get("reason", ""),
+                "confidence": area.get("confidence", 0.0),
+            })
+
+        # Urgent conflicts: location disagreements detected via LLM insight or cypher
+        urgent_conflicts = []
+        llm_insight = correlations.get("llm_insights", "") or ""
+        if isinstance(llm_insight, str) and any(
+            kw in llm_insight.lower()
+            for kw in ["conflict", "contradict", "disagree", "inconsist", "mismatch"]
+        ):
+            urgent_conflicts.append({
+                "type": "agent_disagreement",
+                "description": "Agents report conflicting information — review LLM insight",
+                "blocking": False,
+            })
+
+        # Surface ISRID conflicts (tier == conflict) as urgent items
+        claims = verification.get("claims", []) or []
+        conflict_claims = [c for c in claims if c.get("decision", {}).get("tier") == "conflict"]
+        for cc in conflict_claims[:3]:
+            urgent_conflicts.append({
+                "type":        "isrid_conflict",
+                "description": cc.get("decision", {}).get("evidence_summary", ""),
+                "agent":       cc.get("agent", ""),
+                "blocking":    False,
+            })
+
+        # LLM headline + summary — always attempt if we have any agent data
+        headline = ""
+        llm_summary = ""
+        raw_context = ""
+        if agent_outputs:
+            # Use up to 400 chars per agent so the prompt stays under token limits
+            raw_context = "\n\n".join(
+                f"[{name}]: {text[:400]}"
+                for name, text in agent_outputs.items()
+                if text.strip()
+            )[:2000]
+
+        if self.gemini_model and (top_areas or raw_context or claims):
+            try:
+                area_names    = ", ".join(a["name"] for a in top_areas) or "none identified yet"
+                accepted_claims = [c for c in claims if c.get("decision", {}).get("tier") in ("accept", "flag")]
+                accepted_text = "; ".join(
+                    f"{c['agent']} predicts {c['predicted_value']}"
+                    for c in accepted_claims[:5]
+                ) or "none verified"
+                insight_snippet = str(llm_insight)[:600] if llm_insight else "none"
+
+                prompt = (
+                    "You are the ClueMeister AI for a Search and Rescue operation.\n"
+                    "Based ONLY on the evidence below, write:\n"
+                    "1. HEADLINE: One concise sentence (<15 words) with the most important finding or next action.\n"
+                    "2. SUMMARY: 3-5 bullet points (use • prefix) of the most actionable findings. "
+                    "If data is limited, summarise what IS known and what is still needed.\n\n"
+                    f"Top search areas: {area_names}\n"
+                    f"ISRID-verified claims: {accepted_text}\n"
+                    f"Cross-agent insight: {insight_snippet}\n"
+                    f"Raw agent outputs:\n{raw_context}\n\n"
+                    "Do NOT invent locations or facts not present above.\n"
+                    'Return ONLY a JSON object (no markdown): {"headline": "...", "summary": "..."}'
+                )
+                raw = self.gemini_model.generate_content(
+                    prompt,
+                    generation_config={"temperature": 0.2, "max_output_tokens": 500},
+                ).text.strip()
+
+                # Robust JSON extraction: strip fences, find first {...}
+                if "```" in raw:
+                    parts = raw.split("```")
+                    for part in parts:
+                        part = part.strip()
+                        if part.startswith("json"):
+                            part = part[4:].strip()
+                        if part.startswith("{"):
+                            raw = part
+                            break
+                if not raw.startswith("{"):
+                    start = raw.find("{")
+                    end   = raw.rfind("}") + 1
+                    if start != -1 and end > start:
+                        raw = raw[start:end]
+
+                parsed      = json.loads(raw)
+                headline    = parsed.get("headline", "").strip()
+                llm_summary = parsed.get("summary", "").strip()
+            except Exception as exc:
+                logger.warning(f"build_brief LLM call failed: {exc}")
+                # Fallback: plain text from raw agent outputs
+                if raw_context:
+                    llm_summary = "Agent data collected. Review ISRID Verification below for details."
+
+        # If Gemini returned empty strings but we have raw context, provide a plain fallback
+        if not llm_summary and raw_context:
+            llm_summary = "Agent data collected. See ISRID Verification below for details."
+        if not headline and top_areas:
+            headline = f"Top search area: {top_areas[0]['name']}"
+
+        # Overall confidence: mean of top area confidences only; 0 when no areas
+        if top_areas:
+            overall_conf = sum(a["confidence"] for a in top_areas) / len(top_areas)
+        else:
+            overall_conf = 0.0
+
+        return {
+            "headline":         headline,
+            "confidence":       round(overall_conf, 3),
+            "top_search_areas": top_areas,
+            "urgent_conflicts": urgent_conflicts,
+            "llm_summary":      llm_summary,
+        }
+
+    def export_clue_map(self, confidence_threshold: float = 0.6) -> Dict[str, Any]:
+        """
+        Export a filtered subgraph for frontend visualisation.
+        Only nodes/edges above confidence_threshold are included.
+        """
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        try:
+            with self.knowledge_graph.neo4j_driver.session() as session:
+                node_result = session.run(
+                    "MATCH (n:Entity) WHERE n.confidence >= $t RETURN n",
+                    t=confidence_threshold,
+                )
+                for record in node_result:
+                    n = dict(record["n"])
+                    nodes.append({
+                        "id":         n.get("id", ""),
+                        "type":       n.get("type", "unknown"),
+                        "label":      (n.get("name") or "")[:40],
+                        "confidence": n.get("confidence", 0.0),
+                        "sources":    [n.get("source", "unknown")],
+                    })
+
+                edge_result = session.run(
+                    """MATCH (a:Entity)-[r]->(b:Entity)
+                       WHERE a.confidence >= $t AND b.confidence >= $t
+                       RETURN a.id AS src, b.id AS tgt, type(r) AS rel_type,
+                              r.confidence AS conf""",
+                    t=confidence_threshold,
+                )
+                for record in edge_result:
+                    edges.append({
+                        "source":     record["src"],
+                        "target":     record["tgt"],
+                        "type":       record["rel_type"],
+                        "confidence": record["conf"] or 0.5,
+                    })
+        except Exception as exc:
+            logger.warning(f"export_clue_map Neo4j query failed: {exc}")
+
+        return {"nodes": nodes, "edges": edges}
+
+    def handle_clue_query(self, session_id: str, request_id: str) -> Dict[str, Any]:
+        entries = self.session_buffer.get(session_id, [])
+        # Agents often don't include session_id in payload; fall back to all buffered content
+        if not entries:
+            entries = [e for sub in self.session_buffer.values() for e in sub]
+        agent_outputs: Dict[str, str] = {}
+        for e in entries:
+            name = e["agent"]
+            agent_outputs[name] = agent_outputs.get(name, "") + "\n" + e["text"]
+
+        if not agent_outputs:
+            return {
+                "type":       "on_demand_analysis",
+                "request_id": request_id,
+                "session_id": session_id,
+                "status":     "no_data",
+                "brief":      {},
+                "clue_map":   {"nodes": [], "edges": []},
+                "verification": {"summary": {}, "claims": []},
+                "timestamp":  datetime.utcnow().isoformat() + "Z",
+            }
+
+        verification = self.verification_engine.verify_session(session_id, agent_outputs)
+
+        correlations = {}
+        recommendations = {}
+        try:
+            correlations = self.analyze_cross_agent_correlations()
+        except Exception as exc:
+            logger.warning(f"Correlation analysis failed: {exc}")
+        try:
+            recommendations = self.generate_search_recommendations()
+        except Exception as exc:
+            logger.warning(f"Recommendation generation failed: {exc}")
+
+        brief = {}
+        try:
+            brief = self.build_brief(verification, correlations, recommendations, agent_outputs)
+        except Exception as exc:
+            logger.warning(f"build_brief failed: {exc}")
+
+        clue_map = {}
+        try:
+            clue_map = self.export_clue_map()
+        except Exception as exc:
+            logger.warning(f"export_clue_map failed: {exc}")
+
+        # Wrap verification into nested structure; keep backward-compatible "status" at top level
+        ver_status = verification.get("status", "complete")
+
+        return {
+            "type":       "on_demand_analysis",
+            "request_id": request_id,
+            "session_id": session_id,
+            "status":     ver_status,
+            # Layer 1 — incident commander brief (shown first)
+            "brief": brief,
+            # Layer 2 — graph for visualisation
+            "clue_map": clue_map,
+            # Layer 3 — per-claim ISRID verification (collapsed by default)
+            "verification": {
+                "summary": verification.get("summary", {}),
+                "claims":  verification.get("claims", []),
+            },
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+
 def main():
     """ClueMeister Agent main function"""
     logger.info(f"Initializing {AGENT_NAME}...")
@@ -1195,74 +1473,64 @@ def main():
     # Initialize ClueMeister Agent
     cluemeister = ClueMeisterAgent()
     
-    logger.info(f"{AGENT_NAME} starting up. Listening on streams: {INPUT_STREAMS}")
+    logger.info(f"{AGENT_NAME} starting up. Listening on streams: {INPUT_STREAMS_WITH_TRIGGER}")
     logger.info(f"Update interval: {UPDATE_INTERVAL_SECONDS} seconds")
-    
+
     # Main processing loop
     try:
         for message in bus.subscribe(
             group_name=f"{AGENT_NAME}-group",
             consumer_name=f"{AGENT_NAME}-consumer",
-            streams=INPUT_STREAMS,
+            streams=INPUT_STREAMS_WITH_TRIGGER,
             block_ms=UPDATE_INTERVAL_SECONDS * 1000
         ):
             try:
-                # Extract message data
                 payload = message.payload
                 stream_name = message.envelope.target_stream
-                
+                session_id = payload.get("session_id", "")
+
                 logger.info(f"Processing message from {stream_name}")
-                
-                # Process data
-                result = cluemeister.process_agent_data(stream_name, payload)
-                
-                # Publish results to output stream
-                output_message = wrap_envelope(
+
+                if stream_name == TRIGGER_STREAM:
+                    request_id = payload.get("request_id", f"CLUE-{int(time.time())}")
+                    result = cluemeister.handle_clue_query(session_id, request_id)
+                    logger.info(f"On-demand analysis complete for session {session_id}")
+                else:
+                    agent_name = stream_name.split(".")[0]
+                    cluemeister.buffer_agent_output(session_id, agent_name, stream_name, payload)
+                    result = cluemeister.process_agent_data(stream_name, payload)
+
+                    if result.get("status") == "processed":
+                        print(f"\n=== ClueMeister Analysis ===")
+                        print(f"Stream: {stream_name}")
+                        print(f"Entities created: {result.get('entities_created', 0)}")
+                        print(f"Total entities: {result.get('knowledge_graph_stats', {}).get('total_entities', 0)}")
+                        recommendations = result.get("recommendations", {})
+                        if recommendations.get("immediate_actions"):
+                            print(f"Immediate actions: {len(recommendations['immediate_actions'])}")
+                        print("============================\n")
+
+                bus.publish(wrap_envelope(
                     payload=result,
                     source_name=AGENT_NAME,
                     source_version=AGENT_VERSION,
                     target_stream=OUTPUT_STREAM
-                )
-                
-                bus.publish(output_message)
+                ))
                 logger.info(f"Published ClueMeister analysis to {OUTPUT_STREAM}")
-                
-                # Print key information to console
-                if result.get("status") == "processed":
-                    print(f"\n=== ClueMeister Analysis ===")
-                    print(f"Stream: {stream_name}")
-                    print(f"Entities created: {result.get('entities_created', 0)}")
-                    print(f"Total entities in graph: {result.get('knowledge_graph_stats', {}).get('total_entities', 0)}")
-                    print(f"Clusters found: {result.get('knowledge_graph_stats', {}).get('clusters', 0)}")
-                    
-                    # Display important recommendations
-                    recommendations = result.get("recommendations", {})
-                    if recommendations.get("immediate_actions"):
-                        print(f"Immediate actions: {len(recommendations['immediate_actions'])}")
-                    if recommendations.get("search_priorities"):
-                        print(f"Search priorities: {len(recommendations['search_priorities'])}")
-                    
-                    print("============================\n")
-                
+
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
-                
-                # Send error to dead letter stream
-                error_payload = {
-                    "failed_agent": f"{AGENT_NAME}:{AGENT_VERSION}",
-                    "error_message": str(e),
-                    "error_type": type(e).__name__,
-                    "context": "Failed while processing agent data"
-                }
-                
-                error_message = wrap_envelope(
-                    payload=error_payload,
+                bus.publish(wrap_envelope(
+                    payload={
+                        "failed_agent": f"{AGENT_NAME}:{AGENT_VERSION}",
+                        "error_message": str(e),
+                        "error_type": type(e).__name__,
+                        "context": "Failed while processing agent data"
+                    },
                     source_name=AGENT_NAME,
                     source_version=AGENT_VERSION,
                     target_stream=DEAD_LETTER_STREAM
-                )
-                
-                bus.publish(error_message)
+                ))
                 logger.error(f"Sent error to dead letter stream: {DEAD_LETTER_STREAM}")
                 
     except KeyboardInterrupt:

@@ -16,6 +16,7 @@ venv/
 .venv/
 .deepeval/
 agents/photo_analysis/models
+tsconfig.tsbuildinfo
 
 # IDEs
 .vscode/

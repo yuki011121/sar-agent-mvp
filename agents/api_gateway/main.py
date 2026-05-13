@@ -59,6 +59,7 @@ MISSION_STREAM = "mission.new"
 QUERY_STREAM = "command.query.raw"
 RESPONSE_STREAM = "command.response.raw"
 ANALYSIS_STREAM = "cluemeister.analysis.raw"
+CLUE_TRIGGER_STREAM = "clue.query.raw"
 PHOTO_TASK_STREAM = "photo.task.raw"
 INTERVIEW_INPUT_STREAM = "interview.in.raw"
 
@@ -219,6 +220,11 @@ class MissionResponse(BaseModel):
     status: str
     message: str
     timestamp: str
+
+
+class ClueMeisterRequest(BaseModel):
+    """Request body for on-demand ClueMeister analysis."""
+    session_id: str
 
 
 class QueryRequest(BaseModel):
@@ -631,6 +637,9 @@ async def chat(
                             if payload.get("query_id") == query_id:
                                 for agent in payload.get("agents_used", []):
                                     yield f"event: agent_result\ndata: **{agent}** contributed analysis\n\n"
+                                path_data = payload.get("path_data")
+                                if path_data:
+                                    yield f"event: path_data\ndata: {json.dumps(path_data)}\n\n"
                                 resp = payload.get("response", "")
                                 safe_resp = resp.replace("\n", "\ndata: ")
                                 yield f"event: final\ndata: {safe_resp}\n\n"
@@ -726,6 +735,62 @@ async def get_latest_analysis(count: int = Query(default=1, le=10)):
     if not results:
         raise HTTPException(status_code=404, detail="No analysis available")
     return {"analyses": results}
+
+
+@app.post("/clue-analysis", tags=["Analysis"])
+async def trigger_clue_analysis(request: ClueMeisterRequest):
+    """Trigger on-demand ClueMeister ISRID verification for a session. Timeout: 60s."""
+    request_id = (
+        f"CLUE-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid.uuid4().hex[:6]}"
+    )
+    session_id = request.session_id
+
+    client = get_redis()
+    try:
+        tip = client.xrevrange(ANALYSIS_STREAM, count=1)
+        last_id = tip[0][0] if tip else "0-0"
+    except Exception:
+        last_id = "0-0"
+
+    get_bus().publish(wrap_envelope(
+        payload={
+            "request_id": request_id,
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
+        source_name=AGENT_NAME,
+        source_version=AGENT_VERSION,
+        target_stream=CLUE_TRIGGER_STREAM,
+    ))
+
+    start = asyncio.get_event_loop().time()
+    while (asyncio.get_event_loop().time() - start) < 60:
+        msgs = client.xread({ANALYSIS_STREAM: last_id}, count=10, block=0)
+        if msgs:
+            for _, stream_msgs in msgs:
+                for msg_id, data in stream_msgs:
+                    last_id = msg_id
+                    try:
+                        parsed = parse_message_from_stream(data)
+                        p = parsed.payload if hasattr(parsed, "payload") else {}
+                        if (
+                            p.get("request_id") == request_id
+                            or p.get("session_id") == session_id
+                        ) and p.get("type") == "on_demand_analysis":
+                            return {
+                                "status": "ok",
+                                "session_id": session_id,
+                                "request_id": request_id,
+                                "result": p,
+                            }
+                    except Exception:
+                        pass
+        await asyncio.sleep(0.5)
+
+    raise HTTPException(
+        status_code=504,
+        detail="Timeout: ClueMeister did not respond within 60s",
+    )
 
 
 # ============================================================================

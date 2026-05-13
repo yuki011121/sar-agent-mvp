@@ -52,7 +52,7 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
-      - QDRANT_COLLECTION=SAR_collection
+      - QDRANT_COLLECTION=SAR_context
       - QDRANT_URL=http://qdrant:6333
       - HISTORY_DEFENSE_ENABLED=${HISTORY_DEFENSE_ENABLED:-true}
     depends_on: [redis, qdrant]
@@ -161,7 +161,7 @@ services:
       - VISUALIZATION_OUTPUT_DIR=/workspace/visualizations
     depends_on:
       - redis
-      - neo4j
+    restart: on-failure
     volumes:
       - ./visualizations:/workspace/visualizations
     networks:

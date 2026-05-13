@@ -205,7 +205,7 @@ RULES:
 - Call dispatch_history_query only if the query asks about past SAR cases, historical incidents, similar cases, or precedents. Do NOT call it for weather, health, or witness statement queries.
 - Call dispatch_weather_query if weather, terrain, environment, or exposure is relevant. If the query mentions a specific past date or day (e.g. "last Monday", "on April 10th", "3 days ago"), convert it to YYYY-MM-DD and pass as the date argument.
 - Call dispatch_health_assessment if person health, age, or medical info is mentioned.
-- Call dispatch_path_analysis if location, route, or terrain is relevant.
+- Call dispatch_path_analysis if location, route, or terrain is relevant. Coordinates alone are sufficient — age/cognitive_state/physical_condition are optional and default automatically (age=35, cognitive_state=0.9, physical_condition=0.8). Only pass those fields if explicitly mentioned. Set has_vehicle=true only if the person is known to be on a vehicle or horse.
 - Call dispatch_interview_analysis if: (a) file_urls contains a PDF, OR (b) the query contains witness testimony, statements of what someone observed, interview transcripts, or any narrative account of seeing the missing person. Pass the text as transcript_text.
 - If file_urls contains images → call dispatch_photo_analysis with that image_url.
 - Default coordinates if no location given: lat=35.2828, lon=-120.6596.

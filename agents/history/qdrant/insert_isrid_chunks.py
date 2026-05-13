@@ -44,7 +44,7 @@ def create_collection(VECTOR_SIZE: int):
 
 def main():
     # Prefer loading preformatted data if available; otherwise build it from CSV
-    FILE_LOCATION = '.data/formatted_isrid.json'
+    FILE_LOCATION = './data/formatted_isrid.json'
     formatted_rows = None
 
     if os.path.exists(FILE_LOCATION):
@@ -63,7 +63,7 @@ def main():
     
     points = []
     # Load existing vectorizer if available, otherwise fit a new one and save it
-    VECT_FILE = '../../models/isrid_tfidf_vectorizer.joblib'
+    VECT_FILE = '../models/isrid_tfidf_vectorizer.joblib'
     if os.path.exists(VECT_FILE):
         try:
             vectorizer = load(VECT_FILE)
