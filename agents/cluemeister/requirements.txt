@@ -1,9 +1,9 @@
 redis>=4.5.0
 google-generativeai>=0.8.0
 python-dotenv>=1.0.0
-neo4j>=5.0.0
-plotly>=5.15.0
-kaleido>=0.2.1
+networkx>=3.0
 pandas>=2.0.0
 numpy>=1.24.0
 scipy>=1.11.0
+pydantic>=2.6.0
+rapidfuzz>=3.0.0

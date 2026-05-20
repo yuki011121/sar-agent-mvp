@@ -19,6 +19,7 @@ from knowledge_graph import (
     EntityType, RelationType, Entity, Relation
 )
 from verification import SARVerificationEngine
+from fact_graph import build_session_fact_graph
 
 from knowledge_grounding import KnowledgeGrounding
 
@@ -109,11 +110,27 @@ class ClueMeisterAgent:
         self.recent_data = {}
         self.analysis_history = []
 
-        # Session buffer for on-demand verification
+        # Session buffer for on-demand verification (text snippets)
         self.session_buffer: Dict[str, List[Dict[str, Any]]] = {}
         self._session_buffer_timestamps: Dict[str, float] = {}
         self.session_buffer_ttl: int = int(os.getenv("SESSION_BUFFER_TTL", 3600))
         self.verification_engine = SARVerificationEngine(gemini_model=self.gemini_model)
+
+        # Session payload store — raw agent payloads for rule-based clue map extraction
+        self.session_payloads: Dict[str, List[Dict[str, Any]]] = {}
+        self._session_payload_timestamps: Dict[str, float] = {}
+
+        # Redis client for session persistence across restarts.
+        # Session isolation is preserved: each session_id maps to its own Redis key.
+        try:
+            import redis as redis_lib
+            self._redis = redis_lib.from_url(REDIS_URL, decode_responses=True,
+                                              socket_connect_timeout=2)
+            self._redis.ping()
+            logger.info("Redis session persistence enabled")
+        except Exception as e:
+            logger.warning(f"Redis session persistence unavailable: {e}")
+            self._redis = None
 
         logger.info(f"ClueMeister Agent initialized with knowledge graph")
     
@@ -1206,9 +1223,23 @@ class ClueMeisterAgent:
         for sid in stale:
             self.session_buffer.pop(sid, None)
             self._session_buffer_timestamps.pop(sid, None)
+            self.session_payloads.pop(sid, None)
+            self._session_payload_timestamps.pop(sid, None)
+
+    def _redis_key_buffer(self, session_id: str) -> str:
+        return f"cluemeister:session:{session_id}:buffer"
+
+    def _redis_key_payloads(self, session_id: str) -> str:
+        return f"cluemeister:session:{session_id}:payloads"
+
+    def _redis_key_facts(self, session_id: str) -> str:
+        return f"cluemeister:session:{session_id}:facts"
 
     def buffer_agent_output(self, session_id: str, agent_name: str,
                             stream_name: str, data: Dict[str, Any]) -> None:
+        if not session_id:
+            logger.debug(f"Skipping session buffer for unscoped payload from {stream_name}")
+            return
         text = self._extract_text_from_payload(data)
         if not text:
             return
@@ -1217,96 +1248,444 @@ class ClueMeisterAgent:
         self.session_buffer.setdefault(session_id, []).append(entry)
         self._session_buffer_timestamps[session_id] = time.time()
         self._evict_stale_sessions()
+        if self._redis:
+            try:
+                key = self._redis_key_buffer(session_id)
+                self._redis.rpush(key, json.dumps(entry))
+                self._redis.expire(key, self.session_buffer_ttl)
+            except Exception as e:
+                logger.warning(f"Redis buffer write failed: {e}")
+
+    def buffer_agent_payload(self, session_id: str, agent_name: str,
+                             stream_name: str, data: Dict[str, Any]) -> None:
+        """Store the raw payload for session-scoped clue map extraction."""
+        if not session_id:
+            logger.debug(f"Skipping session payload store for unscoped payload from {stream_name}")
+            return
+        entry = {"agent": agent_name, "stream": stream_name, "data": data}
+        self.session_payloads.setdefault(session_id, []).append(entry)
+        self._session_payload_timestamps[session_id] = time.time()
+        if self._redis:
+            try:
+                key = self._redis_key_payloads(session_id)
+                self._redis.rpush(key, json.dumps(entry))
+                self._redis.expire(key, self.session_buffer_ttl)
+            except Exception as e:
+                logger.warning(f"Redis payload write failed: {e}")
+
+    def build_session_clue_map(self, session_id: str) -> Dict[str, Any]:
+        """
+        Build a session-scoped normalized fact graph from raw agent payloads.
+        No cross-session fallback is allowed: if the session has no payloads,
+        the graph should be empty rather than polluted by other sessions.
+        """
+        entries = self.session_payloads.get(session_id, [])
+
+        # Redis fallback: recover only this session after a container restart.
+        if not entries and self._redis:
+            try:
+                key = self._redis_key_payloads(session_id)
+                raw = self._redis.lrange(key, 0, -1)
+                entries = [json.loads(r) for r in raw]
+                if entries:
+                    logger.info(f"Recovered {len(entries)} payload entries from Redis for session {session_id}")
+            except Exception as e:
+                logger.warning(f"Redis payload read failed: {e}")
+
+        clue_map = build_session_fact_graph(entries, session_id)
+        if self._redis and session_id:
+            try:
+                self._redis.setex(
+                    self._redis_key_facts(session_id),
+                    self.session_buffer_ttl,
+                    json.dumps(clue_map, default=str),
+                )
+            except Exception as e:
+                logger.warning(f"Redis fact graph write failed: {e}")
+        return clue_map
+
+        # Process path analysis first so search_area_ids are populated before
+        # weather/history/interview try to connect to them.
+        entries = sorted(entries, key=lambda e: 0 if "path.analysis" in e["stream"] else 1)
+
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        node_ids: Set[str] = set()
+        search_area_ids: List[str] = []
+
+        def _add_node(node: Dict[str, Any]) -> bool:
+            if node["id"] in node_ids:
+                return False
+            node_ids.add(node["id"])
+            nodes.append(node)
+            return True
+
+        def _add_edge(src: str, tgt: str, rel_type: str, conf: float) -> None:
+            if src in node_ids and tgt in node_ids:
+                edges.append({"source": src, "target": tgt,
+                               "type": rel_type, "confidence": round(conf, 3)})
+
+        for entry in entries:
+            stream = entry["stream"]
+            data = entry["data"]
+
+            # ── PATH ANALYSIS ────────────────────────────────────────────────
+            if "path.analysis" in stream:
+                person_class = data.get("person_class", "")
+                lkp = data.get("lkp") or {}
+                srk = data.get("search_radius_km") or {}
+                if person_class:
+                    details = {
+                        "Category": person_class,
+                        "Profile": data.get("person_profile", ""),
+                        "LKP": f"{lkp['lat']:.4f}, {lkp['lon']:.4f}" if lkp.get("lat") else "",
+                        "Search radius p50": f"{srk.get('p50', '')} km" if srk.get("p50") else "",
+                        "Search radius p95": f"{srk.get('p95', '')} km" if srk.get("p95") else "",
+                    }
+                    _add_node({"id": "missing_person", "type": "person", "agent": "path",
+                               "label": person_class, "confidence": 0.9,
+                               "sources": ["path"], "details": details})
+
+                for pp in (data.get("probability_points") or [])[:5]:
+                    prob = pp.get("endpoint_probability", 0.0)
+                    if prob < 0.05:
+                        continue
+                    lat, lon = pp.get("lat", 0), pp.get("lon", 0)
+                    area_id = f"path_area_{lat:.4f}_{lon:.4f}"
+                    label = f"({lat:.2f}, {lon:.2f})"
+                    details = {
+                        "Probability": f"{round(prob * 100, 1)}%",
+                        "Coordinates": f"{lat:.5f}, {lon:.5f}",
+                    }
+                    if _add_node({"id": area_id, "type": "search_area", "agent": "path",
+                                  "label": label, "confidence": round(prob, 3),
+                                  "sources": ["path"], "details": details}):
+                        search_area_ids.append(area_id)
+                    if "missing_person" in node_ids:
+                        _add_edge("missing_person", area_id, "predicted_at", prob)
+
+            # ── INTERVIEW ANALYSIS ───────────────────────────────────────────
+            elif "interview.analysis" in stream:
+                analysis = data.get("analysis", {})
+                place_count = 0
+                person_count = 0
+                section_locations: Dict[str, str] = {}
+                for extraction in (analysis.get("entity_extraction") or []):
+                    entities = extraction.get("entities", {})
+                    section_snippet = extraction.get("section", "")[:60]
+                    section_key = extraction.get("section", "")[:40]
+                    for place in entities.get("places", []):
+                        if place_count >= 3:
+                            break
+                        loc_id = f"loc_{place.lower().replace(' ', '_')[:20]}"
+                        if _add_node({"id": loc_id, "type": "location", "agent": "interview",
+                                      "label": place[:30], "confidence": 0.7,
+                                      "sources": ["interview"],
+                                      "details": {"Mentioned in": section_snippet}}):
+                            place_count += 1
+                            section_locations[section_key] = loc_id
+                            connected = False
+                            for sa_id in search_area_ids:
+                                sa_node = next((n for n in nodes if n["id"] == sa_id), None)
+                                if sa_node:
+                                    sa_label = sa_node["label"].lower()
+                                    place_lower = place.lower()
+                                    if place_lower in sa_label or sa_label in place_lower:
+                                        _add_edge(loc_id, sa_id, "corroborates", 0.65)
+                                        connected = True
+                            if not connected and "missing_person" in node_ids:
+                                _add_edge(loc_id, "missing_person", "last_seen", 0.65)
+
+                    for person in entities.get("people", []):
+                        if person_count >= 3:
+                            break
+                        p_id = f"iview_person_{person.lower().replace(' ', '_')[:20]}"
+                        if _add_node({"id": p_id, "type": "person", "agent": "interview",
+                                      "label": person[:30], "confidence": 0.7,
+                                      "sources": ["interview"],
+                                      "details": {"Mentioned in": section_snippet}}):
+                            person_count += 1
+                            loc_in_section = section_locations.get(section_key)
+                            if loc_in_section and loc_in_section in node_ids:
+                                _add_edge(p_id, loc_in_section, "reported_at", 0.6)
+                            elif "missing_person" in node_ids:
+                                _add_edge(p_id, "missing_person", "associated_with", 0.6)
+
+            # ── PHOTO ANALYSIS ───────────────────────────────────────────────
+            elif "photo.analysis" in stream:
+                det_count = 0
+                for det in (data.get("detections") or []):
+                    if det_count >= 3:
+                        break
+                    cls = det.get("class", "")
+                    if cls not in ("person", "backpack", "tent", "bottle"):
+                        continue
+                    conf = det.get("confidence", 0.5)
+                    det_id = f"photo_{cls}_{det_count}"
+                    label = f"{cls.title()} detected"
+                    if det.get("clothing_color"):
+                        label = f"{det['clothing_color'].title()} {cls}"
+                    details = {
+                        "Class": cls,
+                        "Hair color": det.get("hair_color", ""),
+                        "Clothing": det.get("clothing_color", ""),
+                    }
+                    if _add_node({"id": det_id, "type": "evidence", "agent": "photo",
+                                  "label": label[:30], "confidence": round(conf, 3),
+                                  "sources": ["photo"], "details": details}):
+                        det_count += 1
+                        if "missing_person" in node_ids:
+                            _add_edge(det_id, "missing_person", "evidence_of", round(conf, 3))
+                        elif search_area_ids:
+                            _add_edge(det_id, search_area_ids[0], "found_at", round(conf, 3))
+
+            # ── WEATHER ──────────────────────────────────────────────────────
+            elif "weather.forecast" in stream:
+                forecasts = data.get("forecasts", [])
+                if forecasts:
+                    f0 = forecasts[0]
+                    condition = f0.get("shortForecast", "")
+                    temp = f0.get("temperature", "")
+                    unit = f0.get("temperatureUnit", "F")
+                    wind = f0.get("windSpeed", "")
+                    label = condition or "Weather data"
+                    details = {
+                        "Condition": condition,
+                        "Temperature": f"{temp}°{unit}" if temp != "" else "",
+                        "Wind": wind,
+                        "Period": f0.get("name", ""),
+                    }
+                else:
+                    daily = data.get("daily_summary", {})
+                    label = daily.get("conditions", "Weather data")
+                    details = {
+                        "Max temp": f"{daily.get('max_temp_c', '')}°C" if daily.get("max_temp_c") != "" else "",
+                        "Max wind": f"{daily.get('max_wind_kmh', '')} km/h" if daily.get("max_wind_kmh") != "" else "",
+                        "Precipitation": f"{daily.get('total_precip_mm', '')} mm" if daily.get("total_precip_mm") != "" else "",
+                    }
+                if _add_node({"id": "weather_cond", "type": "weather", "agent": "weather",
+                              "label": label[:30], "confidence": 0.85,
+                              "sources": ["weather"], "details": details}):
+                    if search_area_ids:
+                        for sa_id in search_area_ids:
+                            _add_edge("weather_cond", sa_id, "affects", 0.6)
+                    elif "missing_person" in node_ids:
+                        _add_edge("weather_cond", "missing_person", "affects", 0.6)
+
+                # Weather hazard node from Open-Meteo hourly breakdown
+                hourly = data.get("hourly_breakdown", [])
+                if hourly:
+                    worst = max(hourly, key=lambda h: (h.get("max_wind_kmh") or 0) + (h.get("total_precip_mm") or 0) * 2)
+                    max_wind = worst.get("max_wind_kmh") or 0
+                    total_precip = worst.get("total_precip_mm") or 0
+                    if max_wind > 30 or total_precip > 5:
+                        hazard_label = (f"Wind {max_wind:.0f} km/h" if max_wind >= total_precip * 2
+                                        else f"Rain {total_precip:.1f} mm")
+                        hazard_details = {
+                            "Period": worst.get("period", ""),
+                            "Wind": f"{max_wind} km/h",
+                            "Precipitation": f"{total_precip} mm",
+                        }
+                        if _add_node({"id": "weather_hazard", "type": "clue", "agent": "weather",
+                                      "label": hazard_label[:30], "confidence": 0.7,
+                                      "sources": ["weather"], "details": hazard_details}):
+                            _add_edge("weather_cond", "weather_hazard", "includes", 0.7)
+
+            # ── HEALTH ASSESSMENT ────────────────────────────────────────────
+            elif "health.assessment" in stream:
+                assessment = data.get("assessment", {})
+                risk = assessment.get("risk_level") or data.get("risk_level", "")
+                if risk:
+                    risks = assessment.get("primary_health_risks", [])
+                    rec_actions = assessment.get("recommended_actions", []) or data.get("recommended_actions", [])
+                    details = {
+                        "Risk level": risk,
+                        "Top risk": risks[0].get("condition", "") if risks else "",
+                        "Severity": risks[0].get("severity", "") if risks else "",
+                        "Action": rec_actions[0][:60] if rec_actions else "",
+                    }
+                    if _add_node({"id": "health_risk", "type": "event", "agent": "health",
+                                  "label": f"Health risk: {risk}"[:30], "confidence": 0.8,
+                                  "sources": ["health"], "details": details}):
+                        if "missing_person" in node_ids:
+                            _add_edge("health_risk", "missing_person", "affects", 0.75)
+                        elif search_area_ids:
+                            _add_edge("health_risk", search_area_ids[0], "affects", 0.65)
+
+                    # Individual risk condition nodes
+                    sev_conf = {"CRITICAL": 0.9, "HIGH": 0.75, "MEDIUM": 0.6, "LOW": 0.45}
+                    for i, risk_item in enumerate(risks[:3]):
+                        condition = risk_item.get("condition", "")
+                        severity = risk_item.get("severity", "")
+                        if not condition:
+                            continue
+                        risk_id = f"health_risk_{i}"
+                        risk_label = f"{condition[:18]} · {severity}" if severity else condition[:28]
+                        risk_conf = sev_conf.get(severity.upper(), 0.65)
+                        risk_details = {
+                            "Condition": condition,
+                            "Severity": severity,
+                            "Reasoning": risk_item.get("reasoning", "")[:80],
+                        }
+                        if _add_node({"id": risk_id, "type": "clue", "agent": "health",
+                                      "label": risk_label[:30], "confidence": risk_conf,
+                                      "sources": ["health"], "details": risk_details}):
+                            _add_edge("health_risk", risk_id, "has_risk", risk_conf)
+
+            # ── HISTORY ──────────────────────────────────────────────────────
+            elif "history.out" in stream:
+                matches_found = data.get("matches_found", 0)
+                actions = data.get("actions") or ""  # string, not list
+                matched_cases = data.get("matched_cases") or []
+                if matches_found:
+                    label = f"{matches_found} similar case{'s' if matches_found != 1 else ''}"
+                else:
+                    label = "Historical analysis"
+                details = {
+                    "Cases matched": str(matches_found) if matches_found else "0",
+                    "Recommendation": actions[:80] if actions else "",
+                }
+                if _add_node({"id": "hist_outcome", "type": "event", "agent": "history",
+                              "label": label[:30], "confidence": 0.6,
+                              "sources": ["history"], "details": details}):
+                    if search_area_ids:
+                        _add_edge("hist_outcome", search_area_ids[0], "similar_outcome", 0.5)
+                    elif "missing_person" in node_ids:
+                        _add_edge("hist_outcome", "missing_person", "corroborates", 0.5)
+
+                # Individual historical case nodes
+                for i, case in enumerate(matched_cases[:2]):
+                    outcome = case.get("Incident_Outcome") or case.get("outcome", "")
+                    terrain = case.get("Terrain") or case.get("terrain", "")
+                    category = case.get("Subject_Category") or case.get("category", "")
+                    if not outcome:
+                        continue
+                    case_id = f"hist_case_{i}"
+                    parts = [p for p in [outcome, terrain] if p]
+                    case_label = " · ".join(parts)[:30]
+                    case_conf = 0.75 if i == 0 else 0.65
+                    case_details = {
+                        "Outcome": outcome,
+                        "Terrain": terrain,
+                        "Category": category,
+                        "Activity": case.get("Subject_Activity") or case.get("activity", ""),
+                    }
+                    if _add_node({"id": case_id, "type": "event", "agent": "history",
+                                  "label": case_label, "confidence": case_conf,
+                                  "sources": ["history"], "details": case_details}):
+                        _add_edge(case_id, "hist_outcome", "similar_outcome", case_conf)
+                        if terrain and search_area_ids:
+                            _add_edge(case_id, search_area_ids[0], "historically_found_near", 0.45)
+
+        # ── POST-PROCESSING: safety-net edges ────────────────────────────────
+        if "missing_person" in node_ids:
+            if not search_area_ids:
+                if "weather_cond" in node_ids:
+                    _add_edge("weather_cond", "missing_person", "affects", 0.6)
+                if "hist_outcome" in node_ids:
+                    _add_edge("hist_outcome", "missing_person", "corroborates", 0.55)
+            if "health_risk" in node_ids:
+                already = any(
+                    (e["source"] == "health_risk" and e["target"] == "missing_person") or
+                    (e["source"] == "missing_person" and e["target"] == "health_risk")
+                    for e in edges
+                )
+                if not already:
+                    _add_edge("health_risk", "missing_person", "affects", 0.75)
+
+        # Cross-agent: cold weather exacerbates hypothermia/exposure health risks
+        if "weather_cond" in node_ids:
+            weather_label = next((n["label"].lower() for n in nodes if n["id"] == "weather_cond"), "")
+            cold_keywords = ("cold", "snow", "freez", "frost", "wind")
+            if any(kw in weather_label for kw in cold_keywords):
+                for node in nodes:
+                    if node["id"].startswith("health_risk_"):
+                        cond_lower = node["details"].get("Condition", "").lower()
+                        if any(kw in cond_lower for kw in ("hypothermia", "frostbite", "exposure")):
+                            _add_edge("weather_cond", node["id"], "exacerbates", 0.7)
+
+        return {"nodes": nodes, "edges": edges}
 
     def build_brief(
         self,
         verification: Dict[str, Any],
-        correlations: Dict[str, Any],
-        recommendations: Dict[str, Any],
-        agent_outputs: Optional[Dict[str, str]] = None,
+        agent_outputs: Dict[str, str],
+        clue_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Strategist layer: synthesise verification + correlations + recommendations
-        into an incident-commander-facing brief.
+        Incident-commander brief derived entirely from the current session's
+        agent outputs. No global KG queries — fully session-scoped.
         """
-        # Top search areas (up to 3) from recommendations
-        top_areas = []
-        for area in (recommendations.get("search_priorities") or [])[:3]:
-            top_areas.append({
-                "name":     area.get("area", "Unknown area"),
-                "priority": area.get("priority", "UNKNOWN"),
-                "rationale": area.get("reason", ""),
-                "confidence": area.get("confidence", 0.0),
-            })
-
-        # Urgent conflicts: location disagreements detected via LLM insight or cypher
-        urgent_conflicts = []
-        llm_insight = correlations.get("llm_insights", "") or ""
-        if isinstance(llm_insight, str) and any(
-            kw in llm_insight.lower()
-            for kw in ["conflict", "contradict", "disagree", "inconsist", "mismatch"]
-        ):
-            urgent_conflicts.append({
-                "type": "agent_disagreement",
-                "description": "Agents report conflicting information — review LLM insight",
-                "blocking": False,
-            })
-
-        # Surface ISRID conflicts (tier == conflict) as urgent items
         claims = verification.get("claims", []) or []
-        conflict_claims = [c for c in claims if c.get("decision", {}).get("tier") == "conflict"]
-        for cc in conflict_claims[:3]:
-            urgent_conflicts.append({
-                "type":        "isrid_conflict",
-                "description": cc.get("decision", {}).get("evidence_summary", ""),
-                "agent":       cc.get("agent", ""),
-                "blocking":    False,
-            })
 
-        # LLM headline + summary — always attempt if we have any agent data
+        nodes = (clue_map or {}).get("nodes", []) or []
+        edges = (clue_map or {}).get("edges", []) or []
+
+        # Build fact-first context for the LLM. Raw output is only supporting context.
+        fact_lines = []
+        for node in sorted(nodes, key=lambda n: n.get("confidence", 0), reverse=True)[:18]:
+            src_agents = sorted({
+                s.get("agent", "") for s in node.get("sources", []) if isinstance(s, dict)
+            })
+            fact_lines.append(
+                f"- {node.get('type')}: {node.get('label')} "
+                f"(conf={node.get('confidence')}, sources={','.join(src_agents)})"
+            )
+        fact_context = "\n".join(fact_lines)
+
+        raw_context = "\n\n".join(
+            f"[{name}]: {text[:400]}"
+            for name, text in agent_outputs.items()
+            if text.strip()
+        )[:2000]
+        llm_context = (f"Normalized facts:\n{fact_context}\n\nRaw agent excerpts:\n{raw_context}")[:3500]
+
+        top_areas: List[Dict[str, Any]] = []
+        llm_conflicts: List[Dict[str, Any]] = []
         headline = ""
         llm_summary = ""
-        raw_context = ""
-        if agent_outputs:
-            # Use up to 400 chars per agent so the prompt stays under token limits
-            raw_context = "\n\n".join(
-                f"[{name}]: {text[:400]}"
-                for name, text in agent_outputs.items()
-                if text.strip()
-            )[:2000]
+        debug: Dict[str, Any] = {}
 
-        if self.gemini_model and (top_areas or raw_context or claims):
+        if self.gemini_model and llm_context.strip():
             try:
-                area_names    = ", ".join(a["name"] for a in top_areas) or "none identified yet"
-                accepted_claims = [c for c in claims if c.get("decision", {}).get("tier") in ("accept", "flag")]
+                accepted_claims = [c for c in claims
+                                   if c.get("decision", {}).get("tier") in ("accept", "flag")]
                 accepted_text = "; ".join(
                     f"{c['agent']} predicts {c['predicted_value']}"
                     for c in accepted_claims[:5]
                 ) or "none verified"
-                insight_snippet = str(llm_insight)[:600] if llm_insight else "none"
 
                 prompt = (
                     "You are the ClueMeister AI for a Search and Rescue operation.\n"
-                    "Based ONLY on the evidence below, write:\n"
-                    "1. HEADLINE: One concise sentence (<15 words) with the most important finding or next action.\n"
-                    "2. SUMMARY: 3-5 bullet points (use • prefix) of the most actionable findings. "
-                    "If data is limited, summarise what IS known and what is still needed.\n\n"
-                    f"Top search areas: {area_names}\n"
-                    f"ISRID-verified claims: {accepted_text}\n"
-                    f"Cross-agent insight: {insight_snippet}\n"
-                    f"Raw agent outputs:\n{raw_context}\n\n"
-                    "Do NOT invent locations or facts not present above.\n"
-                    'Return ONLY a JSON object (no markdown): {"headline": "...", "summary": "..."}'
+                    "Based ONLY on the agent outputs below, return a single JSON object.\n\n"
+                    "JSON schema (no markdown, no extra keys):\n"
+                    '{"headline": "<one sentence, <15 words, most important finding>",\n'
+                    ' "summary": "<3-5 bullet points prefixed with •, most actionable findings>",\n'
+                    ' "search_areas": [\n'
+                    '   {"name": "<location name>", "priority": "CRITICAL|HIGH|MEDIUM|LOW",\n'
+                    '    "rationale": "<one phrase>", "confidence": 0.0}\n'
+                    ' ],\n'
+                    ' "conflicts": [\n'
+                    '   {"description": "<brief conflict description>"}\n'
+                    ' ]\n'
+                    "}\n\n"
+                    "Rules:\n"
+                    "- search_areas: up to 3 geographic locations to search, ordered by priority.\n"
+                    "  Use ONLY place names explicitly mentioned in the agent outputs.\n"
+                    "  If no specific location is mentioned, return an empty array [].\n"
+                    "- conflicts: note any contradictions between agents (empty array if none).\n"
+                    "- Do NOT invent facts not present in the outputs below.\n\n"
+                    f"ISRID-verified claims: {accepted_text}\n\n"
+                    f"Agent outputs:\n{llm_context}"
                 )
                 raw = self.gemini_model.generate_content(
                     prompt,
-                    generation_config={"temperature": 0.2, "max_output_tokens": 500},
+                    generation_config={"temperature": 0.2, "max_output_tokens": 600},
                 ).text.strip()
 
                 # Robust JSON extraction: strip fences, find first {...}
                 if "```" in raw:
-                    parts = raw.split("```")
-                    for part in parts:
+                    for part in raw.split("```"):
                         part = part.strip()
                         if part.startswith("json"):
                             part = part[4:].strip()
@@ -1319,26 +1698,76 @@ class ClueMeisterAgent:
                     if start != -1 and end > start:
                         raw = raw[start:end]
 
-                parsed      = json.loads(raw)
+                parsed = json.loads(raw)
                 headline    = parsed.get("headline", "").strip()
                 llm_summary = parsed.get("summary", "").strip()
+
+                for area in (parsed.get("search_areas") or [])[:3]:
+                    if not area.get("name"):
+                        continue
+                    top_areas.append({
+                        "name":      area["name"],
+                        "priority":  area.get("priority", "UNKNOWN").upper(),
+                        "rationale": area.get("rationale", ""),
+                        "confidence": float(area.get("confidence", 0.5)),
+                    })
+
+                for conflict in (parsed.get("conflicts") or []):
+                    desc = conflict.get("description", "")
+                    if desc:
+                        llm_conflicts.append({
+                            "type":        "agent_disagreement",
+                            "description": desc,
+                            "blocking":    False,
+                        })
+
             except Exception as exc:
                 logger.warning(f"build_brief LLM call failed: {exc}")
-                # Fallback: plain text from raw agent outputs
-                if raw_context:
-                    llm_summary = "Agent data collected. Review ISRID Verification below for details."
+                debug["llm_error"] = str(exc)
 
-        # If Gemini returned empty strings but we have raw context, provide a plain fallback
+        # Deterministic fallback from normalized facts. Avoid generic "agent data collected" text.
+        fact_top_areas = [
+            n for n in nodes
+            if n.get("type") in ("search_area", "location")
+        ]
+        fact_top_areas = sorted(fact_top_areas, key=lambda n: n.get("confidence", 0), reverse=True)[:3]
+        if not top_areas:
+            for node in fact_top_areas:
+                conf = float(node.get("confidence") or 0.5)
+                top_areas.append({
+                    "name": node.get("label", "Unknown area"),
+                    "priority": "HIGH" if conf >= 0.7 else "MEDIUM" if conf >= 0.45 else "LOW",
+                    "rationale": f"{len(node.get('sources', []) or [])} supporting source(s)",
+                    "confidence": conf,
+                })
+        if not headline:
+            if top_areas:
+                headline = f"Top search lead: {top_areas[0]['name']}"
+            elif nodes:
+                headline = f"{len(nodes)} session facts fused from {len(agent_outputs)} agents"
+        if not llm_summary and nodes:
+            important = sorted(nodes, key=lambda n: (len(n.get("sources", []) or []), n.get("confidence", 0)), reverse=True)[:5]
+            llm_summary = "\n".join(
+                f"• {n.get('label')} ({n.get('type')}, {round(float(n.get('confidence') or 0) * 100)}%)"
+                for n in important
+            )
         if not llm_summary and raw_context:
-            llm_summary = "Agent data collected. See ISRID Verification below for details."
-        if not headline and top_areas:
-            headline = f"Top search area: {top_areas[0]['name']}"
+            llm_summary = "• Session-scoped agent outputs were captured, but no structured facts were extracted."
 
-        # Overall confidence: mean of top area confidences only; 0 when no areas
-        if top_areas:
-            overall_conf = sum(a["confidence"] for a in top_areas) / len(top_areas)
-        else:
-            overall_conf = 0.0
+        # ISRID claim conflicts (always session-scoped via verification engine)
+        urgent_conflicts: List[Dict[str, Any]] = list(llm_conflicts)
+        for cc in [c for c in claims if c.get("decision", {}).get("tier") == "conflict"][:3]:
+            urgent_conflicts.append({
+                "type":        "isrid_conflict",
+                "description": cc.get("decision", {}).get("evidence_summary", ""),
+                "agent":       cc.get("agent", ""),
+                "blocking":    False,
+            })
+
+        overall_conf = (
+            sum(a["confidence"] for a in top_areas) / len(top_areas)
+            if top_areas else 0.0
+        )
 
         return {
             "headline":         headline,
@@ -1346,6 +1775,7 @@ class ClueMeisterAgent:
             "top_search_areas": top_areas,
             "urgent_conflicts": urgent_conflicts,
             "llm_summary":      llm_summary,
+            "debug":            debug,
         }
 
     def export_clue_map(self, confidence_threshold: float = 0.6) -> Dict[str, Any]:
@@ -1392,15 +1822,30 @@ class ClueMeisterAgent:
 
     def handle_clue_query(self, session_id: str, request_id: str) -> Dict[str, Any]:
         entries = self.session_buffer.get(session_id, [])
-        # Agents often don't include session_id in payload; fall back to all buffered content
-        if not entries:
-            entries = [e for sub in self.session_buffer.values() for e in sub]
+
+        # Redis fallback for text buffer after container restart
+        if not entries and self._redis:
+            try:
+                key = self._redis_key_buffer(session_id)
+                raw = self._redis.lrange(key, 0, -1)
+                entries = [json.loads(r) for r in raw]
+                if entries:
+                    logger.info(f"Recovered {len(entries)} buffer entries from Redis for session {session_id}")
+            except Exception as e:
+                logger.warning(f"Redis buffer read failed: {e}")
+
         agent_outputs: Dict[str, str] = {}
         for e in entries:
             name = e["agent"]
             agent_outputs[name] = agent_outputs.get(name, "") + "\n" + e["text"]
 
-        if not agent_outputs:
+        clue_map = {}
+        try:
+            clue_map = self.build_session_clue_map(session_id)
+        except Exception as exc:
+            logger.warning(f"build_session_clue_map failed: {exc}")
+
+        if not agent_outputs and not (clue_map.get("nodes") or []):
             return {
                 "type":       "on_demand_analysis",
                 "request_id": request_id,
@@ -1414,43 +1859,29 @@ class ClueMeisterAgent:
 
         verification = self.verification_engine.verify_session(session_id, agent_outputs)
 
-        correlations = {}
-        recommendations = {}
-        try:
-            correlations = self.analyze_cross_agent_correlations()
-        except Exception as exc:
-            logger.warning(f"Correlation analysis failed: {exc}")
-        try:
-            recommendations = self.generate_search_recommendations()
-        except Exception as exc:
-            logger.warning(f"Recommendation generation failed: {exc}")
-
         brief = {}
         try:
-            brief = self.build_brief(verification, correlations, recommendations, agent_outputs)
+            brief = self.build_brief(verification, agent_outputs, clue_map=clue_map)
         except Exception as exc:
             logger.warning(f"build_brief failed: {exc}")
 
-        clue_map = {}
-        try:
-            clue_map = self.export_clue_map()
-        except Exception as exc:
-            logger.warning(f"export_clue_map failed: {exc}")
-
-        # Wrap verification into nested structure; keep backward-compatible "status" at top level
         ver_status = verification.get("status", "complete")
+        # brief and clue_map work independently of verification;
+        # don't block the whole UI when only the KG is unavailable.
+        top_status = "complete" if ver_status in ("unavailable", "no_claims") else ver_status
 
         return {
             "type":       "on_demand_analysis",
             "request_id": request_id,
             "session_id": session_id,
-            "status":     ver_status,
+            "status":     top_status,
             # Layer 1 — incident commander brief (shown first)
             "brief": brief,
             # Layer 2 — graph for visualisation
             "clue_map": clue_map,
             # Layer 3 — per-claim ISRID verification (collapsed by default)
             "verification": {
+                "status":  ver_status,
                 "summary": verification.get("summary", {}),
                 "claims":  verification.get("claims", []),
             },
@@ -1498,6 +1929,7 @@ def main():
                 else:
                     agent_name = stream_name.split(".")[0]
                     cluemeister.buffer_agent_output(session_id, agent_name, stream_name, payload)
+                    cluemeister.buffer_agent_payload(session_id, agent_name, stream_name, payload)
                     result = cluemeister.process_agent_data(stream_name, payload)
 
                     if result.get("status") == "processed":
@@ -1541,5 +1973,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

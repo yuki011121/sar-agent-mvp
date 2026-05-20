@@ -4,18 +4,10 @@ WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    google-generativeai \
-    redis \
-    python-dotenv \
-    neo4j \
-    plotly \
-    kaleido \
-    pandas \
-    numpy \
-    scipy
-
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
+
+COPY agents/cluemeister/requirements.txt ./agents/cluemeister/requirements.txt
+RUN pip install --no-cache-dir -r ./agents/cluemeister/requirements.txt
 
 COPY agents/cluemeister ./agents/cluemeister
 COPY agents/base_agent.py ./agents/base_agent.py
