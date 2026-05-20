@@ -1,6 +1,6 @@
 # Command Agent Dependencies
 
-# LangGraph for agent orchestration (replaces AutoGen)
+# LangGraph for agent orchestration
 langgraph>=0.2.0
 langchain-google-genai>=2.0.0
 langchain-core>=0.3.0
@@ -8,15 +8,17 @@ langchain-core>=0.3.0
 # Google Gemini for LLM
 google-generativeai>=0.8.0
 
-# Redis for data access
+# HTTP server + client
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+python-multipart>=0.0.6
+
+# Redis (still needed for shared utilities)
 redis>=6.0.0
 
 # Environment variables
 python-dotenv>=1.0.0
-
-# Rich CLI
-rich>=13.0.0
-prompt_toolkit>=3.0.0
 
 
 
