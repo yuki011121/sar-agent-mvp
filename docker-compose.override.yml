@@ -1,0 +1,63 @@
+# Development override — automatically merged by Docker Compose.
+#
+# Volume-mounts local code so changes are picked up WITHOUT rebuilding.
+#
+# Workflow:
+#   Code change only  → docker-compose restart <service>
+#   command-agent / api-gateway  → auto-reloads on file save (uvicorn --reload)
+#   requirements.txt changed     → must rebuild: docker-compose build <service>
+
+services:
+  # ── command-agent: uvicorn --reload watches for file changes ────────────────
+  command-agent:
+    volumes:
+      - ./agents/command_agent:/workspace/agents/command_agent
+      - ./agents/__init__.py:/workspace/agents/__init__.py
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+    command: ["uvicorn", "agents.command_agent.main:app",
+              "--host", "0.0.0.0", "--port", "8008",
+              "--reload", "--reload-dir", "/workspace/agents/command_agent"]
+
+  # ── api-gateway: uvicorn --reload ───────────────────────────────────────────
+  api-gateway:
+    volumes:
+      - ./agents/api_gateway:/workspace/agents/api_gateway
+    command: ["uvicorn", "agents.api_gateway.main:app",
+              "--host", "0.0.0.0", "--port", "8080",
+              "--reload", "--reload-dir", "/workspace/agents/api_gateway"]
+
+  # ── Specialist agents: volume mount only, restart to pick up changes ────────
+  weather-agent:
+    volumes:
+      - ./agents/weather:/workspace/agents/weather
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  health-agent:
+    volumes:
+      - ./agents/health:/workspace/agents/health
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  path-analysis-agent:
+    volumes:
+      - ./agents/path_analysis:/workspace/agents/path_analysis
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  history-agent:
+    volumes:
+      - ./agents/history:/workspace/agents/history
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  interview-agent:
+    volumes:
+      - ./agents/interview:/workspace/agents/interview
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  photo-agent:
+    volumes:
+      - ./agents/photo_analysis:/workspace/agents/photo_analysis
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py
+
+  cluemeister-agent:
+    volumes:
+      - ./agents/cluemeister:/workspace/agents/cluemeister
+      - ./agents/base_agent.py:/workspace/agents/base_agent.py

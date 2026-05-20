@@ -7,7 +7,6 @@ networks:
 
 volumes:
   qdrant_storage:
-  neo4j_data:
 
 services:
   # --- Infrastructure ---
@@ -40,6 +39,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - PHOTO_DEFENSE_ENABLED=${PHOTO_DEFENSE_ENABLED:-false}
+      - HTTP_PORT=8006
+    ports: ["8006:8006"]
     depends_on: [redis]
     networks:
       - sar-net
@@ -55,6 +56,8 @@ services:
       - QDRANT_COLLECTION=SAR_context
       - QDRANT_URL=http://qdrant:6333
       - HISTORY_DEFENSE_ENABLED=${HISTORY_DEFENSE_ENABLED:-true}
+      - HTTP_PORT=8004
+    ports: ["8004:8004"]
     depends_on: [redis, qdrant]
     networks:
       - sar-net
@@ -81,6 +84,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - UPDATE_INTERVAL_SECONDS=3600  # 1 hour
+      - HTTP_PORT=8002
+    ports: ["8002:8002"]
     depends_on: [redis]
     networks:
       - sar-net
@@ -95,6 +100,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - GRAPH_RADIUS_KM=5.0
       - N_SIMULATIONS=200
+      - HTTP_PORT=8003
+    ports: ["8003:8003"]
     depends_on: [redis]
     networks:
       - sar-net
@@ -107,6 +114,8 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - HTTP_PORT=8001
+    ports: ["8001:8001"]
     depends_on: [redis]
     networks:
       - sar-net
@@ -120,30 +129,11 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - HTTP_PORT=8005
+    ports: ["8005:8005"]
     depends_on: [redis]
     networks:
       - sar-net
-
-  neo4j:
-    image: neo4j:5-community
-    container_name: neo4j
-    environment:
-      - NEO4J_AUTH=neo4j/password
-      - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_security_procedures_allowlist=apoc.*
-    ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
-    volumes:
-      - neo4j_data:/data
-    networks:
-      - sar-net
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   cluemeister-agent:
     build:
@@ -154,9 +144,6 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=password
       - EXPORT_VISUALIZATIONS=${EXPORT_VISUALIZATIONS:-true}
       - VISUALIZATION_OUTPUT_DIR=/workspace/visualizations
     depends_on:
@@ -177,7 +164,16 @@ services:
       - REDIS_URL=redis://redis:6379
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - COMMAND_AGENT_MODEL=${COMMAND_AGENT_MODEL:-gemini-2.5-flash}
-    depends_on: [redis]
+      - COMMAND_AGENT_HTTP_PORT=8008
+      - WEATHER_AGENT_URL=http://weather-agent:8001
+      - HEALTH_AGENT_URL=http://health-agent:8002
+      - PATH_AGENT_URL=http://path-analysis-agent:8003
+      - HISTORY_AGENT_URL=http://history-agent:8004
+      - INTERVIEW_AGENT_URL=http://interview-agent:8005
+      - PHOTO_AGENT_URL=http://photo-agent:8006
+    ports:
+      - "8008:8008"
+    depends_on: [redis, weather-agent, health-agent, path-analysis-agent, history-agent, interview-agent, photo-agent]
     networks:
       - sar-net
     restart: unless-stopped
@@ -197,9 +193,10 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - API_HOST=0.0.0.0
       - API_PORT=8080
+      - COMMAND_AGENT_URL=http://command-agent:8008
     ports:
       - "8080:8080"
-    depends_on: [redis]
+    depends_on: [redis, command-agent]
     networks:
       - sar-net
     restart: unless-stopped
@@ -208,19 +205,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-  mission-controller:
-    build:
-      context: .
-      dockerfile: ./agents/mission_controller/Dockerfile
-    container_name: mission-controller
-    env_file: .env
-    environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on: [redis]
-    networks:
-      - sar-net
-    restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:latest
