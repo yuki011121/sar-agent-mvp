@@ -45,14 +45,30 @@ export interface ClueMeisterBrief {
   top_search_areas: ClueMeisterSearchArea[];
   urgent_conflicts: ClueMeisterConflict[];
   llm_summary: string;
+  debug?: Record<string, unknown>;
+}
+
+export interface ClueMeisterEvidenceSource {
+  agent: string;
+  stream: string;
+  session_id?: string;
+  turn_id?: string;
+  field_path?: string;
+  excerpt?: string;
+  timestamp?: string;
 }
 
 export interface ClueMeisterClueMapNode {
   id: string;
   type: string;
   label: string;
+  canonical_key?: string;
   confidence: number;
-  sources: string[];
+  sources: Array<string | ClueMeisterEvidenceSource>;
+  agent?: string;
+  details?: Record<string, string | number | boolean | null>;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ClueMeisterClueMapEdge {
@@ -60,6 +76,8 @@ export interface ClueMeisterClueMapEdge {
   target: string;
   type: string;
   confidence: number;
+  sources?: Array<string | ClueMeisterEvidenceSource>;
+  details?: Record<string, string | number | boolean | null>;
 }
 
 export interface ClueMeisterResult {

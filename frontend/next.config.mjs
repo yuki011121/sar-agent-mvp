@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  transpilePackages: ["@xyflow/react"],
   async rewrites() {
     return [
       {
