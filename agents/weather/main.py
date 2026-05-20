@@ -20,6 +20,11 @@ import requests
 from datetime import date as date_type
 from typing import Optional, Dict, Any
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
+
 from shared import wrap_envelope, RedisBus, parse_message_from_stream
 
 AGENT_NAME = os.getenv("AGENT_NAME", "weather-agent")
@@ -33,6 +38,10 @@ DEFAULT_LONGITUDE = float(os.getenv("LONGITUDE", "-120.6596"))
 API_USER_AGENT = "SAR-Multi-Agent-System"
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 30))
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8001"))
+
+# Module-level bus for use in HTTP endpoints
+_bus: Optional[RedisBus] = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,7 +160,9 @@ def fetch_weather_data(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
 def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None,
                                lat: Optional[float] = None, lon: Optional[float] = None,
-                               query_date: Optional[str] = None):
+                               query_date: Optional[str] = None,
+                               session_id: Optional[str] = None,
+                               turn_id: Optional[str] = None):
     """
     Fetches weather data, wraps it in the standard envelope,
     and publishes it using the provided RedisBus instance.
@@ -170,7 +181,11 @@ def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None,
             # Include task_id for correlation if provided
             if task_id:
                 payload["task_id"] = task_id
-            
+            if session_id:
+                payload["session_id"] = session_id
+            if turn_id:
+                payload["turn_id"] = turn_id
+
             message_to_publish = wrap_envelope(
                 payload=payload,
                 source_name=AGENT_NAME,
@@ -178,8 +193,9 @@ def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None,
                 target_stream=STREAM_NAME
             )
             bus.publish(message_to_publish)
-            logger.info(f"Published weather data to {STREAM_NAME}" + 
+            logger.info(f"Published weather data to {STREAM_NAME}" +
                        (f" (task_id: {task_id})" if task_id else ""))
+            return payload
         else:
             raise Exception(f"Failed to fetch weather data for ({use_lat}, {use_lon})")
 
@@ -193,6 +209,10 @@ def fetch_and_publish_weather(bus: RedisBus, task_id: Optional[str] = None,
         }
         if task_id:
             error_payload["task_id"] = task_id
+        if session_id:
+            error_payload["session_id"] = session_id
+        if turn_id:
+            error_payload["turn_id"] = turn_id
             
         error_message = wrap_envelope(
             payload=error_payload,
@@ -230,6 +250,8 @@ def query_listener(bus: RedisBus):
                 
                 # Extract parameters
                 task_id = payload.get("task_id")
+                session_id = payload.get("session_id")
+                turn_id = payload.get("turn_id")
                 lat = payload.get("lat") or payload.get("latitude")
                 lon = payload.get("lon") or payload.get("longitude")
                 query_date = payload.get("date") or payload.get("query_date")
@@ -239,7 +261,15 @@ def query_listener(bus: RedisBus):
                 if lon is not None:
                     lon = float(lon)
 
-                fetch_and_publish_weather(bus, task_id=task_id, lat=lat, lon=lon, query_date=query_date)
+                fetch_and_publish_weather(
+                    bus,
+                    task_id=task_id,
+                    lat=lat,
+                    lon=lon,
+                    query_date=query_date,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
                 
             except Exception as e:
                 logger.error(f"Error processing query message: {e}")
@@ -248,23 +278,82 @@ def query_listener(bus: RedisBus):
         logger.error(f"Query listener error: {e}")
 
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class WeatherRequest(BaseModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    date: Optional[str] = None  # YYYY-MM-DD for historical
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+_http_app = FastAPI(title="weather-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "Provides current and historical weather data for SAR search coordinates.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Weather Analysis",
+                    "description": "Fetch current or historical weather for a lat/lon location.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: WeatherRequest):
+    if _bus is None:
+        return JSONResponse({"error": "Redis not ready"}, status_code=503)
+    try:
+        payload = fetch_and_publish_weather(
+            _bus,
+            lat=req.lat,
+            lon=req.lon,
+            query_date=req.date,
+            session_id=req.session_id,
+            turn_id=req.turn_id,
+        )
+        return {"agent": AGENT_NAME, "status": "success", "result": payload}
+    except Exception as e:
+        logger.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
+    global _bus
     logger.info(f"Initializing {AGENT_NAME} v{AGENT_VERSION}...")
 
     try:
-        bus = RedisBus(REDIS_URL)
+        _bus = RedisBus(REDIS_URL)
     except Exception as e:
         logger.critical(f"Failed to connect to Redis, cannot start agent. Error: {e}")
-        return 
+        return
 
     logger.info(f"{AGENT_NAME} starting up.")
-    
+
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server started on port {HTTP_PORT}")
+
     # Start periodic publisher in background thread
-    periodic_thread = threading.Thread(target=periodic_publisher, args=(bus,), daemon=True)
+    periodic_thread = threading.Thread(target=periodic_publisher, args=(_bus,), daemon=True)
     periodic_thread.start()
-    
+
     # Run query listener in main thread
-    query_listener(bus)
+    query_listener(_bus)
 
 
 if __name__ == "__main__":

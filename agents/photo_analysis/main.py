@@ -4,6 +4,7 @@ import logging
 import json
 import redis
 import tempfile
+import threading
 import requests
 from datetime import datetime
 from ultralytics import YOLO
@@ -13,6 +14,11 @@ import numpy as np
 import traceback
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 # Import RedisBus for StandardMessage format
 from shared import RedisBus, wrap_envelope
@@ -52,6 +58,11 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
 # Adversarial-example defense: Gaussian smoothing applied before YOLO inference
 PHOTO_DEFENSE_ENABLED = os.getenv("PHOTO_DEFENSE_ENABLED", "false").lower() == "true"
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8006"))
+
+# Module-level globals initialised in main()
+_bus: Optional[RedisBus] = None
+_temp_dir: Optional[str] = None
 
 # Enhanced logging configuration
 logging.basicConfig(
@@ -588,6 +599,7 @@ def process_stream_task(bus: RedisBus, task: Dict[str, Any], temp_dir: str) -> O
         filename = task.get("filename", "unknown")
         mission_id = task.get("mission_id")
         session_id = task.get("session_id")
+        turn_id = task.get("turn_id")
         
         if not image_url:
             logger.error(f"Task {task_id} missing image_url")
@@ -621,6 +633,7 @@ def process_stream_task(bus: RedisBus, task: Dict[str, Any], temp_dir: str) -> O
                 "task_id": task_id,
                 "mission_id": mission_id,
                 "session_id": session_id,
+                "turn_id": turn_id,
                 "metadata": {
                     "agent_name": AGENT_NAME,
                     "agent_version": AGENT_VERSION,
@@ -888,39 +901,105 @@ def calculate_sar_metadata(detections: List[Dict[str, Any]], person_analysis: Di
             "sar_metrics": {"people_count": 0, "faces_detected": 0, "equipment_count": 0, "vehicle_count": 0, "terrain_complexity": "UNKNOWN"}
         }
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class PhotoRequest(BaseModel):
+    image_url: str
+    task_id: str = "http-direct"
+    description: str = ""
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+_http_app = FastAPI(title="photo-analysis-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "YOLOv8 object detection and SAR-specific image analysis for search operations.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Photo Analysis",
+                    "description": "Detect persons, objects, and SAR-relevant features in images.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: PhotoRequest):
+    if _bus is None or _temp_dir is None:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    try:
+        task = {
+            "image_url": req.image_url,
+            "task_id": req.task_id,
+            "filename": req.image_url.split("/")[-1],
+            "session_id": req.session_id,
+            "turn_id": req.turn_id,
+        }
+        result = process_stream_task(_bus, task, _temp_dir)
+        if result:
+            _bus.publish(wrap_envelope(
+                payload=result,
+                source_name=AGENT_NAME,
+                source_version=AGENT_VERSION,
+                target_stream=REDIS_OUTPUT_STREAM,
+            ))
+        return {"agent": AGENT_NAME, "status": "success", "result": result}
+    except Exception as e:
+        logger.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
     """Main function with comprehensive error handling."""
+    global _bus, _temp_dir, model
+
     logger.info(f"{AGENT_NAME} {AGENT_VERSION} starting up.")
     logger.info(f"Monitoring directory: {IMAGE_INPUT_DIR}")
     logger.info(f"Listening to stream: {PHOTO_TASK_STREAM}")
     logger.info(f"Face analysis: {'Available' if FACE_RECOGNITION_AVAILABLE else 'Not available'}")
-    
+
     # Initialize RedisBus for StandardMessage format
-    bus = RedisBus(REDIS_URL)
-    if not bus:
+    _bus = RedisBus(REDIS_URL)
+    if not _bus:
         logger.critical("Cannot start agent without Redis connection")
         exit(1)
-    
+
     # Get raw Redis client for stream reading
     redis_client = safe_redis_connection()
     if not redis_client:
         logger.critical("Cannot start agent without Redis connection")
         exit(1)
-    
-    global model
+
     model = safe_model_loading()
     if model is None:
         logger.critical("Cannot start agent without YOLO model")
         exit(1)
-    
+
     processed_files = set()
     processed_stream_ids = set()
     consecutive_errors = 0
     max_consecutive_errors = 5
-    
+
     # Create temp directory for downloaded images
-    temp_dir = tempfile.mkdtemp(prefix="photo_analysis_")
-    logger.info(f"Using temp directory: {temp_dir}")
+    _temp_dir = tempfile.mkdtemp(prefix="photo_analysis_")
+    logger.info(f"Using temp directory: {_temp_dir}")
+
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server started on port {HTTP_PORT}")
     
     try:
         while True:
@@ -951,7 +1030,7 @@ def main():
                             logger.info(f"Processing stream task: {task_id}")
                             
                             # Process the task
-                            result = process_stream_task(bus, payload, temp_dir)
+                            result = process_stream_task(_bus, payload, _temp_dir)
                             
                             if result:
                                 # Print to console
@@ -967,7 +1046,7 @@ def main():
                                         source_version=AGENT_VERSION,
                                         target_stream=REDIS_OUTPUT_STREAM
                                     )
-                                    bus.publish(standard_message)
+                                    _bus.publish(standard_message)
                                     logger.info(f"Published analysis for task {task_id} to {REDIS_OUTPUT_STREAM}")
                                     
                                     # Also store result with task_id for retrieval
@@ -1062,7 +1141,7 @@ def main():
                                 source_version=AGENT_VERSION,
                                 target_stream=REDIS_OUTPUT_STREAM
                             )
-                            bus.publish(standard_message)
+                            _bus.publish(standard_message)
                             logger.info(f"Successfully published analysis for {filename} to {REDIS_OUTPUT_STREAM}")
                         except Exception as e:
                             logger.error(f"Failed to publish results for {filename}: {e}")

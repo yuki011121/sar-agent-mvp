@@ -8,12 +8,18 @@ import re
 import time
 import logging
 import json
+import threading
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 import requests
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 from shared import RedisBus, wrap_envelope, parse_message_from_stream, mcp_tools
 
@@ -26,11 +32,16 @@ UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 30))  # Check
 AGENT_NAME = "interview-agent"
 AGENT_VERSION = "interview-agent-v1.0"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8005"))
 
 # Redis stream names
 INTERVIEW_INPUT_STREAM = "interview.in.raw"
 INTERVIEW_OUTPUT_STREAM = "interview.analysis.raw"
 DEAD_LETTER_STREAM = "system.dead_letter"
+
+# Module-level globals initialised in main()
+_bus: Optional[RedisBus] = None
+_analyst = None
 
 # Setup logging
 logging.basicConfig(
@@ -419,27 +430,93 @@ class InterviewAnalystAgent:
                 }
             }
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class InterviewRequest(BaseModel):
+    file_url: str = ""
+    transcript_text: str = ""
+    witness_name: str = "Unknown"
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+_http_app = FastAPI(title="interview-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "Analyses witness interview transcripts and PDF statements for SAR operations.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Interview Analysis",
+                    "description": "Extract key information from interview transcripts or PDF documents.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: InterviewRequest):
+    if _analyst is None or _bus is None:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    try:
+        result = _analyst.process_interview_request({
+            "file_url": req.file_url,
+            "transcript_text": req.transcript_text,
+            "witness_name": req.witness_name,
+        })
+        if req.session_id:
+            result["session_id"] = req.session_id
+        if req.turn_id:
+            result["turn_id"] = req.turn_id
+        _bus.publish(wrap_envelope(
+            payload=result,
+            source_name=AGENT_NAME,
+            source_version=AGENT_VERSION,
+            target_stream=INTERVIEW_OUTPUT_STREAM,
+        ))
+        return {"agent": AGENT_NAME, "status": "success", "result": result}
+    except Exception as e:
+        logger.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
     """Main function for the Interview Analysis Agent"""
+    global _bus, _analyst
     logger.info(f"Initializing {AGENT_NAME}...")
-    
+
     # Initialize Redis connection
     try:
-        bus = RedisBus(REDIS_URL)
+        _bus = RedisBus(REDIS_URL)
         logger.info(f"Successfully connected to Redis at {REDIS_URL}")
     except Exception as e:
         logger.critical(f"Failed to connect to Redis: {e}")
         return
-    
+
     # Initialize the interview analyst
-    analyst = InterviewAnalystAgent()
+    _analyst = InterviewAnalystAgent()
     
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server started on port {HTTP_PORT}")
+
     logger.info(f"{AGENT_NAME} starting up. Listening on stream: {INTERVIEW_INPUT_STREAM}")
     logger.info(f"Update interval: {UPDATE_INTERVAL_SECONDS} seconds")
-    
+
     # Main processing loop using subscribe
     try:
-        for message in bus.subscribe(
+        for message in _bus.subscribe(
             group_name=f"{AGENT_NAME}-group",
             consumer_name=f"{AGENT_NAME}-consumer",
             streams=[INTERVIEW_INPUT_STREAM],
@@ -452,13 +529,19 @@ def main():
                 
                 # Extract task_id for correlation (from dispatch tool)
                 task_id = payload.pop("task_id", None)
+                session_id = payload.get("session_id")
+                turn_id = payload.get("turn_id")
                 
                 # Process the interview request
-                result = analyst.process_interview_request(payload)
+                result = _analyst.process_interview_request(payload)
                 
                 # Include task_id in response for correlation
                 if task_id:
                     result["task_id"] = task_id
+                if session_id:
+                    result["session_id"] = session_id
+                if turn_id:
+                    result["turn_id"] = turn_id
                 
                 # Publish result to output stream
                 output_message = wrap_envelope(
@@ -468,7 +551,7 @@ def main():
                     target_stream=INTERVIEW_OUTPUT_STREAM
                 )
                 
-                bus.publish(output_message)
+                _bus.publish(output_message)
                 logger.info(f"Published interview analysis result to {INTERVIEW_OUTPUT_STREAM}" +
                            (f" (task_id: {task_id})" if task_id else ""))
                 
@@ -490,7 +573,7 @@ def main():
                     target_stream=DEAD_LETTER_STREAM
                 )
                 
-                bus.publish(error_message)
+                _bus.publish(error_message)
                 logger.error(f"Sent error to dead letter stream: {DEAD_LETTER_STREAM}")
                 
     except KeyboardInterrupt:

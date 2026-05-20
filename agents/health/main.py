@@ -24,6 +24,10 @@ from typing import Dict, List, Optional, Any
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 from shared import RedisBus, wrap_envelope, parse_message_from_stream, mcp_tools
 
@@ -35,6 +39,7 @@ UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 3600))  # Che
 AGENT_NAME = os.getenv("AGENT_NAME", "health-agent")
 AGENT_VERSION = os.getenv("AGENT_VERSION", "health-agent-v1.1")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8002"))
 
 # Redis stream names
 MISSION_STREAM = "mission.new"
@@ -356,7 +361,9 @@ def call_llm(prompt: str) -> Dict:
 
 
 def publish_health_assessment(assessment: Dict, task_id: Optional[str] = None,
-                              mission_id: Optional[str] = None):
+                              mission_id: Optional[str] = None,
+                              session_id: Optional[str] = None,
+                              turn_id: Optional[str] = None):
     """Publish health assessment to Redis stream via RedisBus using A2A envelope."""
     payload = {
         "metadata": {
@@ -372,6 +379,10 @@ def publish_health_assessment(assessment: Dict, task_id: Optional[str] = None,
         payload["task_id"] = task_id
     if mission_id:
         payload["mission_id"] = mission_id
+    if session_id:
+        payload["session_id"] = session_id
+    if turn_id:
+        payload["turn_id"] = turn_id
         
     try:
         std_msg = wrap_envelope(
@@ -422,7 +433,9 @@ def publish_logistics_request(assessment: Dict):
 
 def process_health_assessment(person_info: Optional[Dict] = None,
                               task_id: Optional[str] = None,
-                              mission_id: Optional[str] = None) -> Dict:
+                              mission_id: Optional[str] = None,
+                              session_id: Optional[str] = None,
+                              turn_id: Optional[str] = None) -> Dict:
     """Process health assessment for a person.
     
     Args:
@@ -507,7 +520,13 @@ def process_health_assessment(person_info: Optional[Dict] = None,
     assessment = call_llm(prompt)
     
     # Publish results
-    publish_health_assessment(assessment, task_id=task_id, mission_id=mission_id)
+    publish_health_assessment(
+        assessment,
+        task_id=task_id,
+        mission_id=mission_id,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
     publish_logistics_request(assessment)
     
     return assessment
@@ -545,6 +564,8 @@ def query_listener():
                 # Extract parameters
                 task_id = payload.get("task_id")
                 mission_id = payload.get("mission_id")
+                session_id = payload.get("session_id")
+                turn_id = payload.get("turn_id")
                 
                 # Extract person info if provided
                 person_info = payload.get("person") or payload.get("person_info")
@@ -560,7 +581,9 @@ def query_listener():
                     assessment = process_health_assessment(
                         person_info=person_info,
                         task_id=task_id,
-                        mission_id=mission_id
+                        mission_id=mission_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
                     )
                     logger.info(f"Query assessment complete. Risk level: {assessment.get('risk_level', 'UNKNOWN')}")
                 except Exception as e:
@@ -590,12 +613,66 @@ def query_listener():
         logger.error(f"Query listener error: {e}")
 
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class HealthRequest(BaseModel):
+    person_description: Optional[str] = None
+    person_info: Optional[Dict] = None
+    current_conditions: Optional[str] = None
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+_http_app = FastAPI(title="health-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "Provides health risk assessment for missing persons in SAR operations.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Health Risk Assessment",
+                    "description": "Assess medical risk based on person info and conditions.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: HealthRequest):
+    try:
+        person_info = req.person_info or {}
+        if req.person_description:
+            person_info["description"] = req.person_description
+        if req.current_conditions:
+            person_info["current_conditions"] = req.current_conditions
+
+        assessment = process_health_assessment(
+            person_info=person_info or None,
+            session_id=req.session_id,
+            turn_id=req.turn_id,
+        )
+        return {"agent": AGENT_NAME, "status": "success", "result": assessment}
+    except Exception as e:
+        logger.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
     """Main function for the Health Agent"""
     global bus
-    
+
     logger.info(f"Initializing {AGENT_NAME} v{AGENT_VERSION}...")
-    
+
     # Initialize Redis connection
     try:
         bus = RedisBus(REDIS_URL)
@@ -603,13 +680,18 @@ def main():
     except Exception as e:
         logger.critical(f"Could not connect to Redis via RedisBus: {e}")
         return
-    
+
     logger.info(f"{AGENT_NAME} starting up.")
-    
+
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server started on port {HTTP_PORT}")
+
     # Start periodic publisher in background thread
     periodic_thread = threading.Thread(target=periodic_publisher, daemon=True)
     periodic_thread.start()
-    
+
     # Run query listener in main thread
     query_listener()
 

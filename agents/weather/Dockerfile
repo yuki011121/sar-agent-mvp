@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir \
     requests \
     redis \
-    python-dotenv
+    python-dotenv \
+    fastapi \
+    "uvicorn[standard]"
 
 # Install shared package from GitHub directly
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

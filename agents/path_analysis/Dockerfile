@@ -18,7 +18,9 @@ RUN pip install --no-cache-dir \
     shapely \
     google-generativeai \
     redis \
-    python-dotenv
+    python-dotenv \
+    fastapi \
+    "uvicorn[standard]"
 
 # Install shared package
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

@@ -1,7 +1,13 @@
 import os
 import logging
+import threading
 import osmnx as ox
-from typing import Optional
+from typing import Optional, Dict, Any
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 from shared import wrap_envelope, RedisBus
 
@@ -21,6 +27,9 @@ DEAD_LETTER_STREAM = "system.dead_letter"
 GRAPH_RADIUS_KM = float(os.getenv("GRAPH_RADIUS_KM", "5.0"))
 N_SIMULATIONS = int(os.getenv("N_SIMULATIONS", "200"))
 TOP_N_RESULTS = int(os.getenv("TOP_N_RESULTS", "30"))
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8003"))
+
+_bus: Optional[RedisBus] = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,7 +76,9 @@ def run_path_analysis(bus: RedisBus, task_id: Optional[str],
                       physical_condition: float = 0.8,
                       has_vehicle: bool = False,
                       radius_km: float = GRAPH_RADIUS_KM,
-                      n_simulations: int = N_SIMULATIONS):
+                      n_simulations: int = N_SIMULATIONS,
+                      session_id: Optional[str] = None,
+                      turn_id: Optional[str] = None):
     try:
         # 1. Classify person → LPT profile
         person_class, profile = classify_person(
@@ -119,6 +130,10 @@ def run_path_analysis(bus: RedisBus, task_id: Optional[str],
         }
         if task_id:
             payload["task_id"] = task_id
+        if session_id:
+            payload["session_id"] = session_id
+        if turn_id:
+            payload["turn_id"] = turn_id
 
         bus.publish(wrap_envelope(
             payload=payload,
@@ -128,6 +143,7 @@ def run_path_analysis(bus: RedisBus, task_id: Optional[str],
         ))
         logger.info(f"Published results to {STREAM_NAME}"
                     + (f" (task_id: {task_id})" if task_id else ""))
+        return payload
 
     except Exception as e:
         logger.error(f"Path analysis failed: {e}", exc_info=True)
@@ -138,6 +154,10 @@ def run_path_analysis(bus: RedisBus, task_id: Optional[str],
         }
         if task_id:
             error_payload["task_id"] = task_id
+        if session_id:
+            error_payload["session_id"] = session_id
+        if turn_id:
+            error_payload["turn_id"] = turn_id
 
         bus.publish(wrap_envelope(
             payload=error_payload,
@@ -161,6 +181,8 @@ def query_listener(bus: RedisBus):
             logger.info(f"Received path analysis query: {payload}")
 
             task_id = payload.get("task_id")
+            session_id = payload.get("session_id")
+            turn_id = payload.get("turn_id")
 
             # Extract lat/lon — support both nested and flat formats
             start = payload.get("start") or {}
@@ -194,23 +216,91 @@ def query_listener(bus: RedisBus):
                 has_vehicle=person["has_vehicle"],
                 radius_km=radius_km,
                 n_simulations=n_simulations,
+                session_id=session_id,
+                turn_id=turn_id,
             )
 
         except Exception as e:
             logger.error(f"Error processing query message: {e}", exc_info=True)
 
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class PathRequest(BaseModel):
+    start_lat: float
+    start_lon: float
+    age: int = 35
+    cognitive_state: float = 0.9
+    physical_condition: float = 0.8
+    has_vehicle: bool = False
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+_http_app = FastAPI(title="path-analysis-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "Monte Carlo lost-person simulation for SAR path probability analysis.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Path Analysis",
+                    "description": "Simulate probable movement paths from a last-known position.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: PathRequest):
+    if _bus is None:
+        return JSONResponse({"error": "Redis not ready"}, status_code=503)
+    try:
+        payload = run_path_analysis(
+            bus=_bus,
+            task_id=None,
+            lat=req.start_lat,
+            lon=req.start_lon,
+            age=req.age,
+            cognitive_state=req.cognitive_state,
+            physical_condition=req.physical_condition,
+            has_vehicle=req.has_vehicle,
+            session_id=req.session_id,
+            turn_id=req.turn_id,
+        )
+        return {"agent": AGENT_NAME, "status": "success", "result": payload}
+    except Exception as e:
+        logger.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
+    global _bus
     logger.info(f"Initializing {AGENT_NAME} v{AGENT_VERSION}...")
 
     try:
-        bus = RedisBus(REDIS_URL)
+        _bus = RedisBus(REDIS_URL)
     except Exception as e:
         logger.critical(f"Failed to connect to Redis: {e}")
         return
 
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP server started on port {HTTP_PORT}")
+
     logger.info("Ready. Waiting for queries on path.query.raw ...")
-    query_listener(bus)
+    query_listener(_bus)
 
 
 if __name__ == "__main__":

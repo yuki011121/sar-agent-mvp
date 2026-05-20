@@ -14,7 +14,9 @@ RUN pip install --no-cache-dir \
     redis \
     python-dotenv \
     PyPDF2 \
-    google-generativeai
+    google-generativeai \
+    fastapi \
+    "uvicorn[standard]"
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

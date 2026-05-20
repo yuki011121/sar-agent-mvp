@@ -13,7 +13,9 @@ RUN pip install --no-cache-dir \
     requests \
     redis \
     python-dotenv \
-    google-generativeai
+    google-generativeai \
+    fastapi \
+    "uvicorn[standard]"
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git

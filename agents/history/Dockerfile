@@ -15,11 +15,13 @@ RUN pip install --no-cache-dir \
     python-dotenv \
     qdrant-client \
     joblib \
-    scikit-learn
+    scikit-learn \
+    fastapi \
+    "uvicorn[standard]"
 
 # Next two layers help install the sentence-transformers package (CPU version)
 # Makes the image significantly smaller (by ~10GB)    
-RUN pip install --no-cache-dir torch \
+RUN pip install --no-cache-dir --timeout 300 --retries 5 torch \
     torchvision \
     torchaudio --index-url https://download.pytorch.org/whl/cpu
 

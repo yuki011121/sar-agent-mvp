@@ -1,17 +1,22 @@
 import logging
 import os
+import threading
 from google import genai
 from dotenv import load_dotenv
-# import required module
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ApiException
 from sentence_transformers import SentenceTransformer
 import ast
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from qdrant_client.http.models.models import ScoredPoint
 from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
 from joblib import load
-#for pub/sub for redis
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
+
 from shared import wrap_envelope, RedisBus
 
 load_dotenv()
@@ -25,6 +30,9 @@ AGENT_NAME = "history-agent"
 STREAM_NAME_IN = "history.in.raw"
 STREAM_NAME_OUT = "history.out.raw"
 AGENT_VERSION = "3.0.0"
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8004"))
+
+_bus: Optional[RedisBus] = None
 TOP_K_MATCHES = 3
 QDRANT_TOP_K = 2
 QDRANT_ISRID_COLLECTION = "ISRID_collection"
@@ -262,14 +270,12 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
         "</guidelines>"
         )
 
-    interaction1 = client_gemini.interactions.create(
+    response1 = client_gemini.models.generate_content(
         model="gemini-2.5-flash",
-        system_instruction=dev_instructions,
-        input=user_instructions
+        config=genai.types.GenerateContentConfig(system_instruction=dev_instructions),
+        contents=user_instructions,
     )
-    
-    verify_llm_response(interaction1.status)
-    prev_interactions_response = interaction1.outputs[-1].text
+    prev_interactions_response = response1.text
 
     summary = clean_llm_output(prev_interactions_response)
 
@@ -312,29 +318,108 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
         f"- {incident_Info} \n<RAG_context>"
     )
     
-    interaction2 = client_gemini.interactions.create(
+    response2 = client_gemini.models.generate_content(
         model="gemini-2.5-flash",
-        system_instruction=dev_instructions,
-        input=user_instructions,
-        previous_interaction_id=interaction1.id
+        config=genai.types.GenerateContentConfig(system_instruction=dev_instructions),
+        contents=f"<previous_summary>\n{prev_interactions_response}\n</previous_summary>\n\n{user_instructions}",
     )
 
-    verify_llm_response(interaction2.status)
-
-    actions = clean_llm_output(interaction2.outputs[-1].text)
+    actions = clean_llm_output(response2.text)
     # print(f"token usage for interaction1: {interaction1.usage.to_dict()}\n token usage for interaction2: {interaction2.usage.to_dict()}")
     # print(f"Summary: {summary} \n\n\n Actions: {actions}")
     return summary, actions
 
+# ============================================================================
+# HTTP Server (A2A-compatible)
+# ============================================================================
+
+class HistoryRequest(BaseModel):
+    query: str
+    context: str = ""
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+def _handle_history_query(query: str, context: str = "",
+                          session_id: Optional[str] = None,
+                          turn_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run history lookup and publish to Redis. Returns the result payload."""
+    payload_dict = {"description": query, "context": context}
+    matches = find_match(payload_dict)
+    summary, actions = prompt_llm(matches, payload_dict, context)
+    result = {
+        "summary": summary,
+        "actions": actions,
+        "matches_found": len(matches),
+        "matched_cases": matches,
+        "agent": AGENT_NAME,
+    }
+    if session_id:
+        result["session_id"] = session_id
+    if turn_id:
+        result["turn_id"] = turn_id
+    if _bus is not None:
+        _bus.publish(wrap_envelope(
+            payload=result,
+            source_name=AGENT_NAME,
+            source_version=AGENT_VERSION,
+            target_stream=STREAM_NAME_OUT,
+        ))
+    return result
+
+
+_http_app = FastAPI(title="history-agent")
+
+
+@_http_app.get("/.well-known/agent.json")
+def agent_card():
+    return JSONResponse({
+        "name": AGENT_NAME,
+        "description": "Searches ISRID historical SAR case database for similar incidents.",
+        "version": AGENT_VERSION,
+        "url": f"http://{AGENT_NAME}:{HTTP_PORT}",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "analyze", "name": "Historical Case Search",
+                    "description": "Find similar past SAR cases from the ISRID database.",
+                    "inputModes": ["application/json"],
+                    "outputModes": ["application/json"]}],
+    })
+
+
+@_http_app.post("/analyze")
+def analyze(req: HistoryRequest):
+    try:
+        result = _handle_history_query(
+            req.query,
+            req.context,
+            session_id=req.session_id,
+            turn_id=req.turn_id,
+        )
+        return {"agent": AGENT_NAME, "status": "success", "result": result}
+    except Exception as e:
+        logging.error(f"HTTP /analyze error: {e}")
+        return JSONResponse({"agent": AGENT_NAME, "error": str(e)}, status_code=500)
+
+
+def _start_http_server():
+    uvicorn.run(_http_app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+
+
 def main():
+    global _bus
     logging.info(f"Initializing {AGENT_NAME}...")
 
     try:
-        bus = RedisBus(REDIS_URL)
-        subGen = bus.subscribe("history", "history-agent", [STREAM_NAME_IN])
+        _bus = RedisBus(REDIS_URL)
+        subGen = _bus.subscribe("history", "history-agent", [STREAM_NAME_IN])
     except Exception as e:
         logging.critical(f"Failed to connect to Redis, cannot start agent. Error: {e}")
-        return 
+        return
+
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=_start_http_server, daemon=True)
+    http_thread.start()
+    logging.info(f"HTTP server started on port {HTTP_PORT}")
 
     logging.info("Start redis channel listening loop")
 
@@ -343,6 +428,8 @@ def main():
 
         # Extract task_id for correlation (if dispatched by command agent)
         task_id = message_read.payload.pop('task_id', None)
+        session_id = message_read.payload.pop('session_id', None)
+        turn_id = message_read.payload.pop('turn_id', None)
         
         additional_info = message_read.payload.pop('additional', None)
         additional_info = additional_info or ""
@@ -365,11 +452,16 @@ def main():
                 "summary" : summary,
                 "actions" : actions,
                 "matches_found": len(matches),
+                "matched_cases": matches,
             }
             
             # Include task_id in response for correlation
             if task_id:
                 payload["task_id"] = task_id
+            if session_id:
+                payload["session_id"] = session_id
+            if turn_id:
+                payload["turn_id"] = turn_id
 
             message_to_publish = wrap_envelope(
                 payload=payload,
@@ -378,7 +470,7 @@ def main():
                 target_stream=STREAM_NAME_OUT
             )
 
-            bus.publish(message_to_publish)
+            _bus.publish(message_to_publish)
             logging.info(f"Successfully published payload to redis stream {STREAM_NAME_OUT}" + 
                         (f" (task_id: {task_id})" if task_id else ""))
             
@@ -393,7 +485,11 @@ def main():
                         "matches_found": 0,
                         "error": str(e),
                     }
-                    bus.publish(wrap_envelope(
+                    if session_id:
+                        failure_payload["session_id"] = session_id
+                    if turn_id:
+                        failure_payload["turn_id"] = turn_id
+                    _bus.publish(wrap_envelope(
                         payload=failure_payload,
                         source_name=AGENT_NAME,
                         source_version=AGENT_VERSION,

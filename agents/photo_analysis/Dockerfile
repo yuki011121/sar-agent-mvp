@@ -1,4 +1,4 @@
-FROM python:3.10
+FROM python:3.10-slim
 
 WORKDIR /workspace
 
@@ -15,6 +15,11 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install CPU-only PyTorch first so ultralytics reuses it instead of pulling CUDA wheels
+RUN pip install --no-cache-dir \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
+
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     ultralytics \
@@ -24,7 +29,9 @@ RUN pip install --no-cache-dir \
     redis \
     python-dotenv \
     requests \
-    minio
+    minio \
+    fastapi \
+    "uvicorn[standard]"
 
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
