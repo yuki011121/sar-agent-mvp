@@ -30,6 +30,7 @@ from typing import Optional, Dict, Any, List, AsyncGenerator
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
+import httpx
 import redis
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +65,8 @@ PHOTO_TASK_STREAM = "photo.task.raw"
 INTERVIEW_INPUT_STREAM = "interview.in.raw"
 
 # MinIO Configuration
+COMMAND_AGENT_URL = os.getenv("COMMAND_AGENT_URL", "http://command-agent:8008")
+
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
@@ -547,13 +550,13 @@ async def chat(
     SSE streaming chat endpoint for the frontend.
 
     Accepts FormData: message (str), session_id (str), files[] (optional).
-    Returns text/event-stream with events: agent_start, agent_result, final, done, error.
+    Uploads files to MinIO, then proxies the SSE stream from command-agent.
+    Events: agent_start, agent_result, path_data, final, done, error.
     """
-    query_id = f"QUERY-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
     IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
     file_urls: List[Dict[str, str]] = []
 
-    # Upload files and pre-dispatch to typed agents
+    # Upload files to MinIO; command-agent decides which specialist to call
     for file in files:
         content = await file.read()
         url = upload_to_minio(
@@ -570,89 +573,29 @@ async def chat(
             else "other"
         )
         file_urls.append({"url": url, "filename": file.filename, "type": ftype})
+        logger.info(f"Uploaded {ftype}: {file.filename}")
 
-        task_id = f"TASK-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        if ftype == "image":
-            msg = wrap_envelope(
-                payload={"task_id": task_id, "image_url": url, "filename": file.filename},
-                source_name=AGENT_NAME, source_version=AGENT_VERSION,
-                target_stream=PHOTO_TASK_STREAM,
-            )
-            get_bus().publish(msg)
-            logger.info(f"Pre-dispatched image to photo agent: {task_id}")
-        elif ftype == "pdf":
-            msg = wrap_envelope(
-                payload={"task_id": task_id, "file_url": url, "filename": file.filename},
-                source_name=AGENT_NAME, source_version=AGENT_VERSION,
-                target_stream=INTERVIEW_INPUT_STREAM,
-            )
-            get_bus().publish(msg)
-            logger.info(f"Pre-dispatched PDF to interview agent: {task_id}")
+    logger.info(f"Chat — session={session_id[:8]} files={len(file_urls)} query={message[:80]}")
 
-    # Publish query to command agent, carrying file_urls as context
-    cmd_msg = wrap_envelope(
-        payload={
-            "id": query_id,
-            "query": message,
-            "session_id": session_id,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "file_urls": file_urls,
-        },
-        source_name=AGENT_NAME,
-        source_version=AGENT_VERSION,
-        target_stream=QUERY_STREAM,
-    )
-    get_bus().publish(cmd_msg)
-    logger.info(f"Chat query published: {query_id}")
-
-    async def event_stream() -> AsyncGenerator[str, None]:
-        # Emit agent_start hints for all specialists
-        for name in ["weather", "health", "history", "photo", "path", "interview"]:
-            yield f"event: agent_start\ndata: {name}\n\n"
-            await manager.broadcast({"event": "agent_update", "agent": name})
-            await asyncio.sleep(0.03)
-
-        # Capture stream tip AFTER publishing to avoid replaying old messages
-        client = get_redis()
+    async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
-            tip = client.xrevrange(RESPONSE_STREAM, count=1)
-            last_id = tip[0][0] if tip else "0-0"
-        except Exception:
-            last_id = "0-0"
-
-        timeout = 200
-        start = asyncio.get_event_loop().time()
-        found = False
-
-        while (asyncio.get_event_loop().time() - start) < timeout:
-            # block=0: non-blocking, returns immediately if no data
-            messages = client.xread({RESPONSE_STREAM: last_id}, count=5, block=0)
-            if messages:
-                for _, stream_msgs in messages:
-                    for msg_id, data in stream_msgs:
-                        last_id = msg_id
-                        try:
-                            parsed = parse_message_from_stream(data)
-                            payload = parsed.payload if hasattr(parsed, "payload") else {}
-                            if payload.get("query_id") == query_id:
-                                for agent in payload.get("agents_used", []):
-                                    yield f"event: agent_result\ndata: **{agent}** contributed analysis\n\n"
-                                path_data = payload.get("path_data")
-                                if path_data:
-                                    yield f"event: path_data\ndata: {json.dumps(path_data)}\n\n"
-                                resp = payload.get("response", "")
-                                safe_resp = resp.replace("\n", "\ndata: ")
-                                yield f"event: final\ndata: {safe_resp}\n\n"
-                                yield f"event: done\ndata: {session_id}\n\n"
-                                found = True
-                        except Exception:
-                            pass
-                if found:
-                    return
-            await asyncio.sleep(0.5)
-
-        if not found:
-            yield f"event: error\ndata: Timeout: agents did not respond within 120s\n\n"
+            async with httpx.AsyncClient(timeout=httpx.Timeout(200.0)) as client:
+                async with client.stream(
+                    "POST",
+                    f"{COMMAND_AGENT_URL}/query",
+                    json={
+                        "query": message,
+                        "session_id": session_id,
+                        "file_urls": file_urls,
+                    },
+                ) as response:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+        except httpx.ConnectError:
+            yield b"event: error\ndata: Cannot connect to command-agent\n\n"
+        except Exception as e:
+            logger.error(f"Chat proxy error: {e}", exc_info=True)
+            yield f"event: error\ndata: {str(e)}\n\n".encode()
 
     return StreamingResponse(
         event_stream(),
