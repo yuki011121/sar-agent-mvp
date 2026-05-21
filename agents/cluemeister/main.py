@@ -29,6 +29,7 @@ load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 10))
+PROCESS_STREAM_UPDATES = os.getenv("CLUEMEISTER_PROCESS_STREAM_UPDATES", "false").lower() == "true"
 AGENT_NAME = "cluemeister-agent"
 AGENT_VERSION = "cluemeister-agent-v1.0"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -55,7 +56,7 @@ INPUT_STREAMS = [
 OUTPUT_STREAM = "cluemeister.analysis.raw"
 DEAD_LETTER_STREAM = "system.dead_letter"
 TRIGGER_STREAM = "clue.query.raw"
-INPUT_STREAMS_WITH_TRIGGER = INPUT_STREAMS + [TRIGGER_STREAM]
+INPUT_STREAMS_WITH_TRIGGER = [TRIGGER_STREAM] + INPUT_STREAMS
 
 # Setup logging
 logging.basicConfig(
@@ -1304,308 +1305,6 @@ class ClueMeisterAgent:
                 logger.warning(f"Redis fact graph write failed: {e}")
         return clue_map
 
-        # Process path analysis first so search_area_ids are populated before
-        # weather/history/interview try to connect to them.
-        entries = sorted(entries, key=lambda e: 0 if "path.analysis" in e["stream"] else 1)
-
-        nodes: List[Dict[str, Any]] = []
-        edges: List[Dict[str, Any]] = []
-        node_ids: Set[str] = set()
-        search_area_ids: List[str] = []
-
-        def _add_node(node: Dict[str, Any]) -> bool:
-            if node["id"] in node_ids:
-                return False
-            node_ids.add(node["id"])
-            nodes.append(node)
-            return True
-
-        def _add_edge(src: str, tgt: str, rel_type: str, conf: float) -> None:
-            if src in node_ids and tgt in node_ids:
-                edges.append({"source": src, "target": tgt,
-                               "type": rel_type, "confidence": round(conf, 3)})
-
-        for entry in entries:
-            stream = entry["stream"]
-            data = entry["data"]
-
-            # ── PATH ANALYSIS ────────────────────────────────────────────────
-            if "path.analysis" in stream:
-                person_class = data.get("person_class", "")
-                lkp = data.get("lkp") or {}
-                srk = data.get("search_radius_km") or {}
-                if person_class:
-                    details = {
-                        "Category": person_class,
-                        "Profile": data.get("person_profile", ""),
-                        "LKP": f"{lkp['lat']:.4f}, {lkp['lon']:.4f}" if lkp.get("lat") else "",
-                        "Search radius p50": f"{srk.get('p50', '')} km" if srk.get("p50") else "",
-                        "Search radius p95": f"{srk.get('p95', '')} km" if srk.get("p95") else "",
-                    }
-                    _add_node({"id": "missing_person", "type": "person", "agent": "path",
-                               "label": person_class, "confidence": 0.9,
-                               "sources": ["path"], "details": details})
-
-                for pp in (data.get("probability_points") or [])[:5]:
-                    prob = pp.get("endpoint_probability", 0.0)
-                    if prob < 0.05:
-                        continue
-                    lat, lon = pp.get("lat", 0), pp.get("lon", 0)
-                    area_id = f"path_area_{lat:.4f}_{lon:.4f}"
-                    label = f"({lat:.2f}, {lon:.2f})"
-                    details = {
-                        "Probability": f"{round(prob * 100, 1)}%",
-                        "Coordinates": f"{lat:.5f}, {lon:.5f}",
-                    }
-                    if _add_node({"id": area_id, "type": "search_area", "agent": "path",
-                                  "label": label, "confidence": round(prob, 3),
-                                  "sources": ["path"], "details": details}):
-                        search_area_ids.append(area_id)
-                    if "missing_person" in node_ids:
-                        _add_edge("missing_person", area_id, "predicted_at", prob)
-
-            # ── INTERVIEW ANALYSIS ───────────────────────────────────────────
-            elif "interview.analysis" in stream:
-                analysis = data.get("analysis", {})
-                place_count = 0
-                person_count = 0
-                section_locations: Dict[str, str] = {}
-                for extraction in (analysis.get("entity_extraction") or []):
-                    entities = extraction.get("entities", {})
-                    section_snippet = extraction.get("section", "")[:60]
-                    section_key = extraction.get("section", "")[:40]
-                    for place in entities.get("places", []):
-                        if place_count >= 3:
-                            break
-                        loc_id = f"loc_{place.lower().replace(' ', '_')[:20]}"
-                        if _add_node({"id": loc_id, "type": "location", "agent": "interview",
-                                      "label": place[:30], "confidence": 0.7,
-                                      "sources": ["interview"],
-                                      "details": {"Mentioned in": section_snippet}}):
-                            place_count += 1
-                            section_locations[section_key] = loc_id
-                            connected = False
-                            for sa_id in search_area_ids:
-                                sa_node = next((n for n in nodes if n["id"] == sa_id), None)
-                                if sa_node:
-                                    sa_label = sa_node["label"].lower()
-                                    place_lower = place.lower()
-                                    if place_lower in sa_label or sa_label in place_lower:
-                                        _add_edge(loc_id, sa_id, "corroborates", 0.65)
-                                        connected = True
-                            if not connected and "missing_person" in node_ids:
-                                _add_edge(loc_id, "missing_person", "last_seen", 0.65)
-
-                    for person in entities.get("people", []):
-                        if person_count >= 3:
-                            break
-                        p_id = f"iview_person_{person.lower().replace(' ', '_')[:20]}"
-                        if _add_node({"id": p_id, "type": "person", "agent": "interview",
-                                      "label": person[:30], "confidence": 0.7,
-                                      "sources": ["interview"],
-                                      "details": {"Mentioned in": section_snippet}}):
-                            person_count += 1
-                            loc_in_section = section_locations.get(section_key)
-                            if loc_in_section and loc_in_section in node_ids:
-                                _add_edge(p_id, loc_in_section, "reported_at", 0.6)
-                            elif "missing_person" in node_ids:
-                                _add_edge(p_id, "missing_person", "associated_with", 0.6)
-
-            # ── PHOTO ANALYSIS ───────────────────────────────────────────────
-            elif "photo.analysis" in stream:
-                det_count = 0
-                for det in (data.get("detections") or []):
-                    if det_count >= 3:
-                        break
-                    cls = det.get("class", "")
-                    if cls not in ("person", "backpack", "tent", "bottle"):
-                        continue
-                    conf = det.get("confidence", 0.5)
-                    det_id = f"photo_{cls}_{det_count}"
-                    label = f"{cls.title()} detected"
-                    if det.get("clothing_color"):
-                        label = f"{det['clothing_color'].title()} {cls}"
-                    details = {
-                        "Class": cls,
-                        "Hair color": det.get("hair_color", ""),
-                        "Clothing": det.get("clothing_color", ""),
-                    }
-                    if _add_node({"id": det_id, "type": "evidence", "agent": "photo",
-                                  "label": label[:30], "confidence": round(conf, 3),
-                                  "sources": ["photo"], "details": details}):
-                        det_count += 1
-                        if "missing_person" in node_ids:
-                            _add_edge(det_id, "missing_person", "evidence_of", round(conf, 3))
-                        elif search_area_ids:
-                            _add_edge(det_id, search_area_ids[0], "found_at", round(conf, 3))
-
-            # ── WEATHER ──────────────────────────────────────────────────────
-            elif "weather.forecast" in stream:
-                forecasts = data.get("forecasts", [])
-                if forecasts:
-                    f0 = forecasts[0]
-                    condition = f0.get("shortForecast", "")
-                    temp = f0.get("temperature", "")
-                    unit = f0.get("temperatureUnit", "F")
-                    wind = f0.get("windSpeed", "")
-                    label = condition or "Weather data"
-                    details = {
-                        "Condition": condition,
-                        "Temperature": f"{temp}°{unit}" if temp != "" else "",
-                        "Wind": wind,
-                        "Period": f0.get("name", ""),
-                    }
-                else:
-                    daily = data.get("daily_summary", {})
-                    label = daily.get("conditions", "Weather data")
-                    details = {
-                        "Max temp": f"{daily.get('max_temp_c', '')}°C" if daily.get("max_temp_c") != "" else "",
-                        "Max wind": f"{daily.get('max_wind_kmh', '')} km/h" if daily.get("max_wind_kmh") != "" else "",
-                        "Precipitation": f"{daily.get('total_precip_mm', '')} mm" if daily.get("total_precip_mm") != "" else "",
-                    }
-                if _add_node({"id": "weather_cond", "type": "weather", "agent": "weather",
-                              "label": label[:30], "confidence": 0.85,
-                              "sources": ["weather"], "details": details}):
-                    if search_area_ids:
-                        for sa_id in search_area_ids:
-                            _add_edge("weather_cond", sa_id, "affects", 0.6)
-                    elif "missing_person" in node_ids:
-                        _add_edge("weather_cond", "missing_person", "affects", 0.6)
-
-                # Weather hazard node from Open-Meteo hourly breakdown
-                hourly = data.get("hourly_breakdown", [])
-                if hourly:
-                    worst = max(hourly, key=lambda h: (h.get("max_wind_kmh") or 0) + (h.get("total_precip_mm") or 0) * 2)
-                    max_wind = worst.get("max_wind_kmh") or 0
-                    total_precip = worst.get("total_precip_mm") or 0
-                    if max_wind > 30 or total_precip > 5:
-                        hazard_label = (f"Wind {max_wind:.0f} km/h" if max_wind >= total_precip * 2
-                                        else f"Rain {total_precip:.1f} mm")
-                        hazard_details = {
-                            "Period": worst.get("period", ""),
-                            "Wind": f"{max_wind} km/h",
-                            "Precipitation": f"{total_precip} mm",
-                        }
-                        if _add_node({"id": "weather_hazard", "type": "clue", "agent": "weather",
-                                      "label": hazard_label[:30], "confidence": 0.7,
-                                      "sources": ["weather"], "details": hazard_details}):
-                            _add_edge("weather_cond", "weather_hazard", "includes", 0.7)
-
-            # ── HEALTH ASSESSMENT ────────────────────────────────────────────
-            elif "health.assessment" in stream:
-                assessment = data.get("assessment", {})
-                risk = assessment.get("risk_level") or data.get("risk_level", "")
-                if risk:
-                    risks = assessment.get("primary_health_risks", [])
-                    rec_actions = assessment.get("recommended_actions", []) or data.get("recommended_actions", [])
-                    details = {
-                        "Risk level": risk,
-                        "Top risk": risks[0].get("condition", "") if risks else "",
-                        "Severity": risks[0].get("severity", "") if risks else "",
-                        "Action": rec_actions[0][:60] if rec_actions else "",
-                    }
-                    if _add_node({"id": "health_risk", "type": "event", "agent": "health",
-                                  "label": f"Health risk: {risk}"[:30], "confidence": 0.8,
-                                  "sources": ["health"], "details": details}):
-                        if "missing_person" in node_ids:
-                            _add_edge("health_risk", "missing_person", "affects", 0.75)
-                        elif search_area_ids:
-                            _add_edge("health_risk", search_area_ids[0], "affects", 0.65)
-
-                    # Individual risk condition nodes
-                    sev_conf = {"CRITICAL": 0.9, "HIGH": 0.75, "MEDIUM": 0.6, "LOW": 0.45}
-                    for i, risk_item in enumerate(risks[:3]):
-                        condition = risk_item.get("condition", "")
-                        severity = risk_item.get("severity", "")
-                        if not condition:
-                            continue
-                        risk_id = f"health_risk_{i}"
-                        risk_label = f"{condition[:18]} · {severity}" if severity else condition[:28]
-                        risk_conf = sev_conf.get(severity.upper(), 0.65)
-                        risk_details = {
-                            "Condition": condition,
-                            "Severity": severity,
-                            "Reasoning": risk_item.get("reasoning", "")[:80],
-                        }
-                        if _add_node({"id": risk_id, "type": "clue", "agent": "health",
-                                      "label": risk_label[:30], "confidence": risk_conf,
-                                      "sources": ["health"], "details": risk_details}):
-                            _add_edge("health_risk", risk_id, "has_risk", risk_conf)
-
-            # ── HISTORY ──────────────────────────────────────────────────────
-            elif "history.out" in stream:
-                matches_found = data.get("matches_found", 0)
-                actions = data.get("actions") or ""  # string, not list
-                matched_cases = data.get("matched_cases") or []
-                if matches_found:
-                    label = f"{matches_found} similar case{'s' if matches_found != 1 else ''}"
-                else:
-                    label = "Historical analysis"
-                details = {
-                    "Cases matched": str(matches_found) if matches_found else "0",
-                    "Recommendation": actions[:80] if actions else "",
-                }
-                if _add_node({"id": "hist_outcome", "type": "event", "agent": "history",
-                              "label": label[:30], "confidence": 0.6,
-                              "sources": ["history"], "details": details}):
-                    if search_area_ids:
-                        _add_edge("hist_outcome", search_area_ids[0], "similar_outcome", 0.5)
-                    elif "missing_person" in node_ids:
-                        _add_edge("hist_outcome", "missing_person", "corroborates", 0.5)
-
-                # Individual historical case nodes
-                for i, case in enumerate(matched_cases[:2]):
-                    outcome = case.get("Incident_Outcome") or case.get("outcome", "")
-                    terrain = case.get("Terrain") or case.get("terrain", "")
-                    category = case.get("Subject_Category") or case.get("category", "")
-                    if not outcome:
-                        continue
-                    case_id = f"hist_case_{i}"
-                    parts = [p for p in [outcome, terrain] if p]
-                    case_label = " · ".join(parts)[:30]
-                    case_conf = 0.75 if i == 0 else 0.65
-                    case_details = {
-                        "Outcome": outcome,
-                        "Terrain": terrain,
-                        "Category": category,
-                        "Activity": case.get("Subject_Activity") or case.get("activity", ""),
-                    }
-                    if _add_node({"id": case_id, "type": "event", "agent": "history",
-                                  "label": case_label, "confidence": case_conf,
-                                  "sources": ["history"], "details": case_details}):
-                        _add_edge(case_id, "hist_outcome", "similar_outcome", case_conf)
-                        if terrain and search_area_ids:
-                            _add_edge(case_id, search_area_ids[0], "historically_found_near", 0.45)
-
-        # ── POST-PROCESSING: safety-net edges ────────────────────────────────
-        if "missing_person" in node_ids:
-            if not search_area_ids:
-                if "weather_cond" in node_ids:
-                    _add_edge("weather_cond", "missing_person", "affects", 0.6)
-                if "hist_outcome" in node_ids:
-                    _add_edge("hist_outcome", "missing_person", "corroborates", 0.55)
-            if "health_risk" in node_ids:
-                already = any(
-                    (e["source"] == "health_risk" and e["target"] == "missing_person") or
-                    (e["source"] == "missing_person" and e["target"] == "health_risk")
-                    for e in edges
-                )
-                if not already:
-                    _add_edge("health_risk", "missing_person", "affects", 0.75)
-
-        # Cross-agent: cold weather exacerbates hypothermia/exposure health risks
-        if "weather_cond" in node_ids:
-            weather_label = next((n["label"].lower() for n in nodes if n["id"] == "weather_cond"), "")
-            cold_keywords = ("cold", "snow", "freez", "frost", "wind")
-            if any(kw in weather_label for kw in cold_keywords):
-                for node in nodes:
-                    if node["id"].startswith("health_risk_"):
-                        cond_lower = node["details"].get("Condition", "").lower()
-                        if any(kw in cond_lower for kw in ("hypothermia", "frostbite", "exposure")):
-                            _add_edge("weather_cond", node["id"], "exacerbates", 0.7)
-
-        return {"nodes": nodes, "edges": edges}
-
     def build_brief(
         self,
         verification: Dict[str, Any],
@@ -1906,6 +1605,7 @@ def main():
     
     logger.info(f"{AGENT_NAME} starting up. Listening on streams: {INPUT_STREAMS_WITH_TRIGGER}")
     logger.info(f"Update interval: {UPDATE_INTERVAL_SECONDS} seconds")
+    logger.info(f"Legacy stream processing enabled: {PROCESS_STREAM_UPDATES}")
 
     # Main processing loop
     try:
@@ -1930,6 +1630,13 @@ def main():
                     agent_name = stream_name.split(".")[0]
                     cluemeister.buffer_agent_output(session_id, agent_name, stream_name, payload)
                     cluemeister.buffer_agent_payload(session_id, agent_name, stream_name, payload)
+                    if not PROCESS_STREAM_UPDATES:
+                        logger.info(
+                            f"Buffered payload from {stream_name} for session "
+                            f"{session_id or '<unscoped>'}; skipping legacy stream analysis"
+                        )
+                        continue
+
                     result = cluemeister.process_agent_data(stream_name, payload)
 
                     if result.get("status") == "processed":
