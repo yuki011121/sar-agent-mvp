@@ -65,7 +65,12 @@ export default function ClueMeisterBubble({ data }: Props) {
 
       {/* Layer 2 — Clue Map graph (collapsed by default) */}
       {data.clue_map && (data.clue_map.nodes.length > 0 || data.clue_map.edges.length > 0) && (
-        <ClueMapSection nodes={data.clue_map.nodes} edges={data.clue_map.edges} />
+        <ClueMapSection
+          nodes={data.clue_map.nodes}
+          edges={data.clue_map.edges}
+          views={data.clue_map.views}
+          debug={data.clue_map.debug}
+        />
       )}
 
       {/* Layer 3 — Verification (collapsed by default) */}

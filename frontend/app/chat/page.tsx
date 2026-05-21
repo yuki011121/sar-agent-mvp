@@ -64,6 +64,16 @@ export interface ClueMeisterClueMapNode {
   label: string;
   canonical_key?: string;
   confidence: number;
+  priority_score?: number;
+  priority_tier?: "critical" | "high" | "medium" | "low";
+  rank?: number | null;
+  role?: "subject" | "lkp" | "search_area" | "risk" | "evidence" | "context" | "history" | "incident";
+  display_label?: string;
+  detail_label?: string;
+  decision_tier?: "critical" | "high" | "medium" | "low" | "support";
+  priority_rank?: number | null;
+  geo?: { lat: number; lon: number } | null;
+  support_summary?: string;
   sources: Array<string | ClueMeisterEvidenceSource>;
   agent?: string;
   details?: Record<string, string | number | boolean | null>;
@@ -72,12 +82,25 @@ export interface ClueMeisterClueMapNode {
 }
 
 export interface ClueMeisterClueMapEdge {
+  id?: string;
   source: string;
   target: string;
   type: string;
   confidence: number;
   sources?: Array<string | ClueMeisterEvidenceSource>;
   details?: Record<string, string | number | boolean | null>;
+  reason?: string;
+  importance?: "primary" | "supporting" | "context";
+  display_label?: string;
+  show_in_command?: boolean;
+  show_in_analyze?: boolean;
+}
+
+export interface ClueMeisterClueMapView {
+  node_ids: string[];
+  edge_ids: string[];
+  hidden_counts: { nodes: number; edges: number };
+  focus: "decision" | "evidence";
 }
 
 export interface ClueMeisterResult {
@@ -86,7 +109,16 @@ export interface ClueMeisterResult {
   // Layer 1 — incident commander brief
   brief?: ClueMeisterBrief;
   // Layer 2 — graph data
-  clue_map?: { nodes: ClueMeisterClueMapNode[]; edges: ClueMeisterClueMapEdge[] };
+  clue_map?: {
+    schema_version?: string;
+    views?: {
+      command?: ClueMeisterClueMapView;
+      analyze?: ClueMeisterClueMapView;
+    };
+    nodes: ClueMeisterClueMapNode[];
+    edges: ClueMeisterClueMapEdge[];
+    debug?: Record<string, unknown>;
+  };
   // Layer 3 — per-claim ISRID verification
   verification?: {
     summary: {
