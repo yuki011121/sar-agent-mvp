@@ -1,8 +1,8 @@
 """
 Prompt Injection Evaluation Harness
 
-Runs N trials for each payload variant (clean baseline, Payload A, Payload B),
-calculates Attack Success Rate (ASR), and saves results to
+Runs N trials for each payload variant (clean baseline, Payload A, Payload B,
+Payload C), calculates Attack Success Rate (ASR), and saves results to
 security/results/prompt_injection/.
 
 Usage:
@@ -25,6 +25,7 @@ from security.attacks.prompt_injection.inject_redis_stream import (
     LABELS,
     PAYLOAD_A,
     PAYLOAD_B,
+    PAYLOAD_C,
     publish_to_interview,
     wait_for_result,
     check_success,
@@ -57,6 +58,7 @@ def run_evaluation(n_trials: int = 5, timeout: int = 90) -> dict:
         "clean": CLEAN_TRANSCRIPT,
         "A":     PAYLOAD_A,
         "B":     PAYLOAD_B,
+        "C":     PAYLOAD_C,
     }
 
     all_results: dict = {
@@ -99,6 +101,7 @@ def run_evaluation(n_trials: int = 5, timeout: int = 90) -> dict:
         "baseline_asr":  calculate_asr(all_results["trials"]["clean"]),
         "payload_a_asr": calculate_asr(all_results["trials"]["A"]),
         "payload_b_asr": calculate_asr(all_results["trials"]["B"]),
+        "payload_c_asr": calculate_asr(all_results["trials"]["C"]),
     }
     all_results["summary"] = summary
 
@@ -108,6 +111,7 @@ def run_evaluation(n_trials: int = 5, timeout: int = 90) -> dict:
     print(f"  Baseline ASR (false-positive rate) : {summary['baseline_asr']:.1%}")
     print(f"  Payload A ASR (direct command)     : {summary['payload_a_asr']:.1%}")
     print(f"  Payload B ASR (disguised note)     : {summary['payload_b_asr']:.1%}")
+    print(f"  Payload C ASR (paraphrase bypass)  : {summary['payload_c_asr']:.1%}")
     print()
 
     fname = f"eval_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"

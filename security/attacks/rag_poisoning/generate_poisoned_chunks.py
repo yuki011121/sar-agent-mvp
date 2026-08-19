@@ -1,5 +1,5 @@
 """
-Data Poisoning — Poisoned SAR Chunk Generator
+RAG Poisoning — Poisoned SAR Chunk Generator
 
 Two payloads that mirror the prompt injection experiment structure:
 

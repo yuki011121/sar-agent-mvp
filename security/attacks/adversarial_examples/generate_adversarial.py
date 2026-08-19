@@ -99,6 +99,8 @@ def pgd_attack(
     epsilon: float,
     n_steps: int = 20,
     step_size: float = 2 / 255,
+    random_start: bool = True,
+    transform_fn=None,
 ) -> tuple[torch.Tensor, float, float]:
     """
     Projected Gradient Descent (I-FGSM) targeting person suppression.
@@ -108,7 +110,12 @@ def pgd_attack(
       2. Project back into the ε-ball around the original image.
       3. Clip to [0, 1].
 
-    Uses training mode to avoid inference_mode tensor restriction in ultralytics.
+    Args:
+        random_start  — if True, initialise δ from Uniform(-ε, ε) so each
+                        trial is an independent sample (R-PGD). Default True.
+        transform_fn  — optional differentiable transform applied before the
+                        model forward pass (e.g. differentiable Gaussian blur
+                        for adaptive / EOT attacks). Gradients flow through it.
 
     Returns:
         adversarial_tensor  — [1, 3, 640, 640] float, clamped to [0, 1]
@@ -121,12 +128,18 @@ def pgd_attack(
         clean_conf = _get_person_confidence_train(torch_model, img_tensor).item()
 
     img_orig = img_tensor.clone()
-    img_adv = img_tensor.clone()
+
+    if random_start:
+        noise = torch.zeros_like(img_tensor).uniform_(-epsilon, epsilon)
+        img_adv = (img_tensor + noise).clamp(0.0, 1.0)
+    else:
+        img_adv = img_tensor.clone()
 
     for _ in range(n_steps):
         img_adv = img_adv.detach().requires_grad_(True)
         with torch.enable_grad():
-            person_conf = _get_person_confidence_train(torch_model, img_adv)
+            x = transform_fn(img_adv) if transform_fn is not None else img_adv
+            person_conf = _get_person_confidence_train(torch_model, x)
             person_conf.backward()
 
         # Gradient descent step (suppress person confidence)

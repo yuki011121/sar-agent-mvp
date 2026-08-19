@@ -39,6 +39,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - PHOTO_DEFENSE_ENABLED=${PHOTO_DEFENSE_ENABLED:-false}
+      - PHOTO_DEFENSE_MODE=${PHOTO_DEFENSE_MODE:-none}
       - HTTP_PORT=8006
     ports: ["8006:8006"]
     depends_on: [redis]
@@ -53,9 +54,11 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
-      - QDRANT_COLLECTION=SAR_context
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-SAR_context}
       - QDRANT_URL=http://qdrant:6333
       - HISTORY_DEFENSE_ENABLED=${HISTORY_DEFENSE_ENABLED:-true}
+      - HISTORY_PROVENANCE_ALLOWLIST_ENABLED=${HISTORY_PROVENANCE_ALLOWLIST_ENABLED:-false}
+      - HISTORY_ROBUSTRAG_ENABLED=${HISTORY_ROBUSTRAG_ENABLED:-false}
       - HTTP_PORT=8004
     ports: ["8004:8004"]
     depends_on: [redis, qdrant]
@@ -129,8 +132,15 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - INTERVIEW_PG_MODE=${INTERVIEW_PG_MODE:-off}
+      - INTERVIEW_PG_THRESHOLD=${INTERVIEW_PG_THRESHOLD:-0.8}
+      - PROMPT_GUARD_MODEL=${PROMPT_GUARD_MODEL:-/models/prompt_guard_2_86m}
+      - HF_HUB_DISABLE_XET=1
       - HTTP_PORT=8005
     ports: ["8005:8005"]
+    volumes:
+      - ./.hf_cache:/root/.cache/huggingface
+      - ./models/prompt_guard_2_86m:/models/prompt_guard_2_86m:ro
     depends_on: [redis]
     networks:
       - sar-net

@@ -56,8 +56,17 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
-# Adversarial-example defense: Gaussian smoothing applied before YOLO inference
-PHOTO_DEFENSE_ENABLED = os.getenv("PHOTO_DEFENSE_ENABLED", "false").lower() == "true"
+# Adversarial-example defense mode.
+# PHOTO_DEFENSE_MODE controls which defense is applied:
+#   none   — disabled (raw image passed to YOLO; same as old PHOTO_DEFENSE_ENABLED=false)
+#   blur   — Gaussian blur 5×5 (original weak baseline; kept for comparison)
+#   jpeg   — JPEG compression q=75 (new, more principled input-transformation defense)
+#   detect — pre/post-blur divergence detector (raises alert, does NOT modify image)
+# PHOTO_DEFENSE_ENABLED=true is kept as a backward-compat alias → maps to "blur".
+_pg_mode_raw = os.getenv("PHOTO_DEFENSE_MODE", "").lower()
+_pg_legacy   = os.getenv("PHOTO_DEFENSE_ENABLED", "false").lower() == "true"
+PHOTO_DEFENSE_MODE: str = _pg_mode_raw if _pg_mode_raw in ("none", "blur", "jpeg", "detect") \
+                          else ("blur" if _pg_legacy else "none")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "8006"))
 
 # Module-level globals initialised in main()
@@ -439,12 +448,33 @@ def safe_analyze_image(image_path: str) -> Dict[str, Any]:
                 "error_type": "loading_error"
             }
         
-        # Adversarial-example defense: smooth image to destroy high-frequency perturbations
-        if PHOTO_DEFENSE_ENABLED:
-            img_cv = cv2.imread(image_path)
-            if img_cv is not None:
-                img_blurred = cv2.GaussianBlur(img_cv, (5, 5), 0)
-                cv2.imwrite(image_path, img_blurred)
+        # Adversarial-example defense (mode controlled by PHOTO_DEFENSE_MODE).
+        img_cv = cv2.imread(image_path)
+        if img_cv is not None and PHOTO_DEFENSE_MODE != "none":
+            if PHOTO_DEFENSE_MODE == "blur":
+                # Weak baseline — Gaussian blur 5×5 (gradient masking; Guo et al. 2018).
+                # Known to exhibit defense inversion at large ε (Athalye et al. 2018).
+                purified = cv2.GaussianBlur(img_cv, (5, 5), 0)
+                cv2.imwrite(image_path, purified)
+
+            elif PHOTO_DEFENSE_MODE == "jpeg":
+                # JPEG compression q=75 — destroys high-freq adversarial noise
+                # via DCT quantisation without the inversion seen with blur.
+                from security.defenses.purify_image import purify_jpeg
+                purified = purify_jpeg(img_cv, quality=75)
+                cv2.imwrite(image_path, purified)
+
+            elif PHOTO_DEFENSE_MODE == "detect":
+                # Divergence detector — runs YOLO twice and raises an alert
+                # if |conf_raw - conf_blur| >= 0.3. Does NOT modify the image.
+                from security.defenses.purify_image import detect_adversarial
+                is_adv, c_raw, c_blur = detect_adversarial(img_cv, model)
+                if is_adv:
+                    logger.warning(
+                        "ADVERSARIAL INPUT DETECTED (detect mode): "
+                        "conf_raw=%.3f, conf_blur=%.3f — image not modified, alert raised.",
+                        c_raw, c_blur,
+                    )
 
         # YOLOv8 object detection
         try:

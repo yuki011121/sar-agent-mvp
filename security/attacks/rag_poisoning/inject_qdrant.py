@@ -1,7 +1,7 @@
 """
-Data Poisoning — Qdrant Injection Module
+RAG Poisoning — Qdrant Injection Module
 
-Manages SAR_collection state for the data-poisoning experiment:
+Manages SAR_collection state for the RAG-poisoning experiment:
 
   reset_collection()          — delete + recreate SAR_collection
   inject_clean()              — load 10 factually correct SAR chunks
@@ -24,8 +24,8 @@ from sentence_transformers import SentenceTransformer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from security.attacks.data_poisoning.generate_clean_chunks import get_clean_chunks
-from security.attacks.data_poisoning.generate_poisoned_chunks import (
+from security.attacks.rag_poisoning.generate_clean_chunks import get_clean_chunks
+from security.attacks.rag_poisoning.generate_poisoned_chunks import (
     get_payload_a_chunks,
     get_payload_b_chunks,
 )

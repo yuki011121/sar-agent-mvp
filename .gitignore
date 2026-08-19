@@ -49,6 +49,7 @@ models/*.pt
 models/*.pth
 models/*.h5
 models/*.pkl
+models/prompt_guard_2_86m/
 *.joblib
 
 # Logs and debug files
@@ -66,6 +67,7 @@ interview_analysis_results.json
 
 # Cache and temporary files
 cache/
+.hf_cache/
 *.cache
 *.tmp
 *.temp

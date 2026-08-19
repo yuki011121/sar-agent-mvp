@@ -1,5 +1,10 @@
 """
-Data Poisoning Evaluation Harness
+RAG Poisoning Evaluation Harness
+
+NOTE on terminology: this attack is *RAG poisoning* (a.k.a. retrieval-corpus
+poisoning), not classical *data poisoning*. No model weights are modified —
+only the Qdrant retrieval index is augmented with fabricated documents.
+See PoisonedRAG (Zou et al., USENIX Security 2025) for the standard term.
 
 Mirrors the structure of security/attacks/prompt_injection/eval_injection.py.
 
@@ -16,10 +21,10 @@ Each trial:
   4. Run check_poison_success() on the actions field
 
 Usage:
-    python eval_poisoning.py                         # full 3-phase, 5 trials each
-    python eval_poisoning.py --payload A --trials 5  # only Payload A, phase 1+2
-    python eval_poisoning.py --trials 3 --timeout 120
-    python eval_poisoning.py --phase 2               # single phase
+    python eval_rag_poisoning.py                         # full 3-phase, 5 trials each
+    python eval_rag_poisoning.py --payload A --trials 5  # only Payload A, phase 1+2
+    python eval_rag_poisoning.py --trials 3 --timeout 120
+    python eval_rag_poisoning.py --phase 2               # single phase
 """
 
 import argparse
@@ -35,7 +40,7 @@ import redis
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from shared import RedisBus, wrap_envelope
-from security.attacks.data_poisoning.inject_qdrant import (
+from security.attacks.rag_poisoning.inject_qdrant import (
     reset_collection,
     inject_clean,
     inject_poisoned,
@@ -45,7 +50,7 @@ from security.evaluation.metrics import calculate_asr, save_results, check_poiso
 REDIS_URL = "redis://localhost:6379"
 HISTORY_INPUT_STREAM = "history.in.raw"
 HISTORY_OUTPUT_STREAM = "history.out.raw"
-RESULTS_DIR = Path(__file__).resolve().parents[2] / "results" / "data_poisoning"
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "results" / "rag_poisoning"
 
 # ── Mountain hiker query — the target scenario for poisoning ──────────────────
 # Mirrors helper.py query format. Semantically close to poisoned chunk content.
@@ -207,7 +212,7 @@ def run_evaluation(
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "n_trials": n_trials,
             "timeout_secs": timeout,
-            "attack": "data_poisoning",
+            "attack": "rag_poisoning",
             "target": "SAR_collection / history-agent",
         },
         "phases": [],
@@ -215,7 +220,7 @@ def run_evaluation(
     }
 
     print("\n" + "=" * 70)
-    print("SAR DATA POISONING — EVALUATION")
+    print("SAR RAG POISONING — EVALUATION")
     print(f"Trials per phase : {n_trials}  |  Timeout: {timeout}s")
     print("=" * 70)
 
@@ -260,7 +265,7 @@ def run_evaluation(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SAR data poisoning evaluation")
+    parser = argparse.ArgumentParser(description="SAR RAG poisoning evaluation")
     parser.add_argument("--payload", choices=["A", "B"], default=None,
                         help="Test only one payload (default: both A and B)")
     parser.add_argument("--trials", type=int, default=5, help="Trials per phase (default 5)")

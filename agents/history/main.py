@@ -52,6 +52,16 @@ import re as _re
 # Set HISTORY_DEFENSE_ENABLED=false to disable for controlled experiments
 DEFENSE_ENABLED = os.getenv("HISTORY_DEFENSE_ENABLED", "true").lower() == "true"
 
+# Provenance allowlist defense — drop chunks from untrusted sources before LLM.
+# Defeats RAG Payload A and B (both use fabricated source names).
+PROVENANCE_ALLOWLIST_ENABLED = os.getenv(
+    "HISTORY_PROVENANCE_ALLOWLIST_ENABLED", "false"
+).lower() == "true"
+
+# RobustRAG aggregation — majority-vote across per-chunk Gemini calls.
+# Defense-in-depth when an attacker successfully spoofs a trusted source name.
+ROBUSTRAG_ENABLED = os.getenv("HISTORY_ROBUSTRAG_ENABLED", "false").lower() == "true"
+
 _POISON_PATTERNS = [
     _re.compile(r"suspend[_\s]+search", _re.IGNORECASE),
     _re.compile(r"found[_\s]+safe", _re.IGNORECASE),
@@ -284,6 +294,28 @@ def prompt_llm(matches: List[dict], query: dict, incident_Info: str):
     additional_context = qdrant_query(qdrant_context_embedding, QDRANT_COLLECTION, QDRANT_TOP_K)
     additional_context = [context.payload for context in additional_context]
     additional_context = _sanitize_rag_context(additional_context)
+
+    # Defense layer 2: provenance allowlist (RAG poisoning defense).
+    # Drops any chunk whose provenance.source is not on the trusted list.
+    # Enabled independently of the regex layer via HISTORY_PROVENANCE_ALLOWLIST_ENABLED.
+    if PROVENANCE_ALLOWLIST_ENABLED:
+        from security.defenses.sanitize_rag_context import filter_by_provenance
+        additional_context = filter_by_provenance(additional_context)
+
+    # Defense layer 3: RobustRAG aggregation — produces a majority-voted
+    # recommendation across per-chunk Gemini calls. Only active when enabled
+    # AND enough chunks remain after filtering.
+    if ROBUSTRAG_ENABLED and len(additional_context) >= 2:
+        from security.defenses.sanitize_rag_context import robust_rag_aggregate
+        query_str = str(query)
+        aggregated = robust_rag_aggregate(additional_context, client_gemini, query_str)
+        if aggregated:
+            logging.info("RobustRAG: using aggregated recommendation instead of raw context.")
+            additional_context = [
+                {"provenance": {"source": "RobustRAG-aggregated", "author": "majority-vote"},
+                 "content": aggregated}
+            ]
+
     #query llm for actions to take based on summaries generated
     
     dev_instructions = (

@@ -33,9 +33,11 @@ RUN python -m pip install --no-cache-dir \
 # Install shared package from GitHub
 RUN pip install --no-cache-dir git+https://github.com/RandomCyberCoder/Agentic-MVP-Shared.git
 
-# Copy agent code (this will copy everything including models directory)
+# Copy agent code and security defenses
 COPY agents/history ./agents/history
 COPY agents/base_agent.py ./agents/base_agent.py
+COPY security/defenses ./security/defenses
+COPY security/__init__.py ./security/__init__.py
 
 # Set environment
 ENV PYTHONPATH=/workspace

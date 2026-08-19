@@ -1,5 +1,5 @@
 """
-Data Poisoning — Clean SAR Chunk Generator
+RAG Poisoning — Clean SAR Chunk Generator
 
 Factually correct SAR knowledge chunks for mountain hiker scenarios.
 These are the BASELINE chunks that populate SAR_collection before any poisoning.
