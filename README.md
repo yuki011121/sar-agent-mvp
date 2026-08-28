@@ -176,6 +176,7 @@ docker compose up -d
 poetry env use python3
 poetry install
 ```
+
 ### 3. Running an Agent
 Example: run the Weather Agent.
 ```
@@ -204,3 +205,7 @@ poetry env remove python
 # 2. Re-install everything from scratch
 poetry install
 ```
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
